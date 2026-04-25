@@ -4,46 +4,20 @@
 
 .DESCRIPTION
   Self-contained, no prerequisites beyond Windows + admin shell. Will:
-   1. Download Python 3.13 embeddable distribution (no admin Python install needed)
-   2. Bootstrap pip, install pyodbc + pywin32 wheels from PyPI
+   1. Download Python 3.13 embeddable distribution (no system Python needed)
+   2. Bootstrap pip, install pyodbc + keyring
    3. Auto-install ODBC Driver 18 for SQL Server if missing
-   4. Auto-download NSSM if missing
-   5. Copy server files, register and start the Windows service
-   6. Health-check the HTTP endpoint
-
-.PARAMETER InstallDir
-  Target directory. Default: D:\util\mcp-sqlbroker
-
-.PARAMETER NssmPath
-  Path to nssm.exe. If empty, common locations are searched, then auto-downloaded.
-
-.PARAMETER Port
-  Port for the HTTP MCP endpoint. Default: 8765
-
-.PARAMETER BindHost
-  Bind address. Default: 127.0.0.1 (localhost only).
-
-.PARAMETER ServiceName
-  NSSM service name. Default: mcp-sqlbroker
-
-.PARAMETER SkipOdbc
-  Skip the ODBC Driver 18 auto-install step.
-
-.PARAMETER SkipService
-  Install files only; do not register the Windows service.
-
-.EXAMPLE
-  .\deploy.ps1
-  .\deploy.ps1 -InstallDir 'C:\apps\mcp-sqlbroker' -Port 9000
+   4. Register a Windows Scheduled Task (`mcp-sqlbroker`) that runs the
+      broker at boot as SYSTEM and auto-restarts on failure (NSSM-free).
+   5. Health-check the HTTP endpoint
 #>
 [CmdletBinding()]
 param(
-  [string]$InstallDir   = 'D:\util\mcp-sqlbroker',
-  [string]$NssmPath     = '',
-  [int]   $Port         = 8765,
-  [string]$BindHost     = '127.0.0.1',
-  [string]$ServiceName  = 'mcp-sqlbroker',
-  [string]$ServiceUser  = '',
+  [string]$InstallDir      = 'D:\util\mcp-sqlbroker',
+  [int]   $Port            = 8765,
+  [string]$BindHost        = '127.0.0.1',
+  [string]$ServiceName     = 'mcp-sqlbroker',
+  [string]$ServiceUser     = '',
   [string]$ServicePassword = '',
   [switch]$SkipOdbc,
   [switch]$SkipService
@@ -176,81 +150,79 @@ if ($SkipService) {
   exit 0
 }
 
-# --- 4) NSSM service ---
-if (-not $NssmPath) {
-  $candidates = @(
+# --- 4) Windows Task Scheduler service (no NSSM needed) ---
+# Migrate / clean up any previous NSSM service so we don't have two copies running
+$existingNssmService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($existingNssmService) {
+  Info "Found legacy NSSM service '$ServiceName'; stopping and removing"
+  $oldNssm = @(
     (Join-Path $InstallDir 'nssm.exe'),
     'D:\util\nssm.exe',
     'C:\util\nssm.exe',
-    'C:\Program Files\nssm\nssm.exe',
-    'C:\ProgramData\chocolatey\bin\nssm.exe'
-  )
-  foreach ($c in $candidates) { if (Test-Path $c) { $NssmPath = $c; break } }
-  if (-not $NssmPath) {
-    $cmd = Get-Command nssm -ErrorAction SilentlyContinue
-    if ($cmd) { $NssmPath = $cmd.Source }
+    'C:\Program Files\nssm\nssm.exe'
+  ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($oldNssm) {
+    & $oldNssm stop   $ServiceName 2>&1 | Out-Null
+    & $oldNssm remove $ServiceName confirm 2>&1 | Out-Null
+  } else {
+    sc.exe stop   $ServiceName 2>&1 | Out-Null
+    sc.exe delete $ServiceName 2>&1 | Out-Null
   }
 }
-if (-not (Test-Path $NssmPath)) {
-  $bundled = Join-Path $InstallDir 'nssm.exe'
-  Info 'NSSM not found, downloading nssm-2.24 from nssm.cc'
-  $tmpZip = Join-Path $env:TEMP 'nssm-2.24.zip'
-  $tmpDir = Join-Path $env:TEMP 'nssm-2.24-extract'
-  try {
-    Invoke-WebRequest -Uri 'https://nssm.cc/release/nssm-2.24.zip' -OutFile $tmpZip -UseBasicParsing
-    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
-    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
-    $arch = if ([Environment]::Is64BitOperatingSystem) { 'win64' } else { 'win32' }
-    $src = Get-ChildItem -Path $tmpDir -Recurse -Filter 'nssm.exe' |
-           Where-Object { $_.FullName -match "\\$arch\\" } |
-           Select-Object -First 1
-    if (-not $src) { Fail 'Could not locate nssm.exe inside the downloaded archive' }
-    Copy-Item $src.FullName $bundled -Force
-    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
-    $NssmPath = $bundled
-    Ok "NSSM bundled at $bundled"
-  } catch {
-    Fail "NSSM download failed: $_. Install manually from https://nssm.cc/download and rerun with -NssmPath."
-  }
+
+# Tear down any prior scheduled task with the same name
+$existingTask = Get-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+if ($existingTask) {
+  Stop-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $ServiceName -Confirm:$false -ErrorAction SilentlyContinue
 }
-Ok "Using NSSM at $NssmPath"
 
-# Tear down any prior copy of the service (ignore stderr noise)
-$ErrorActionPreference = 'Continue'
-& $NssmPath stop   $ServiceName 2>&1 | Out-Null
-& $NssmPath remove $ServiceName confirm 2>&1 | Out-Null
-$ErrorActionPreference = 'Stop'
+# Use a wrapper batch that exports MCP_SQL_* env vars and chains to the broker.
+$wrapperBat = Join-Path $InstallDir '_run_broker.bat'
+@"
+@echo off
+set MCP_SQL_HOST=$BindHost
+set MCP_SQL_PORT=$Port
+set MCP_SQL_CONFIG=$InstallDir\connections.json
+set MCP_SQL_LOG=$InstallDir\service.log
+"$pyExe" "$InstallDir\server.py"
+"@ | Set-Content -Path $wrapperBat -Encoding ASCII
 
-& $NssmPath install $ServiceName $pyExe (Join-Path $InstallDir 'server.py') | Out-Null
-& $NssmPath set $ServiceName AppDirectory $InstallDir | Out-Null
-& $NssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
-& $NssmPath set $ServiceName AppEnvironmentExtra `
-    "MCP_SQL_HOST=$BindHost" `
-    "MCP_SQL_PORT=$Port" `
-    "MCP_SQL_CONFIG=$InstallDir\connections.json" `
-    "MCP_SQL_LOG=$InstallDir\service.log" `
-  | Out-Null
-& $NssmPath set $ServiceName AppStdout (Join-Path $InstallDir 'service.out.log') | Out-Null
-& $NssmPath set $ServiceName AppStderr (Join-Path $InstallDir 'service.err.log') | Out-Null
-& $NssmPath set $ServiceName AppRotateFiles 1 | Out-Null
-& $NssmPath set $ServiceName AppRotateBytes 5242880 | Out-Null
-& $NssmPath set $ServiceName Description 'MCP SQL Broker - alias-based MSSQL connection broker over HTTP/JSON-RPC' | Out-Null
-
+$action = New-ScheduledTaskAction -Execute $wrapperBat -WorkingDirectory $InstallDir
+$trigger = New-ScheduledTaskTrigger -AtStartup
 if ($ServiceUser) {
   if (-not $ServicePassword) { Fail 'ServiceUser requires ServicePassword' }
-  & $NssmPath set $ServiceName ObjectName $ServiceUser $ServicePassword | Out-Null
-  Info "Service will run as $ServiceUser"
+  $principal = New-ScheduledTaskPrincipal -UserId $ServiceUser -LogonType Password -RunLevel Highest
+  $regArgs = @{ User = $ServiceUser; Password = $ServicePassword }
+} else {
+  $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+  $regArgs = @{}
 }
+$settings = New-ScheduledTaskSettingsSet `
+  -StartWhenAvailable `
+  -DontStopOnIdleEnd `
+  -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries `
+  -RestartCount 99 `
+  -RestartInterval (New-TimeSpan -Minutes 1) `
+  -ExecutionTimeLimit (New-TimeSpan -Days 0)
 
-$ErrorActionPreference = 'Continue'
-& $NssmPath reset $ServiceName Throttle 2>&1 | Out-Null
-& $NssmPath start $ServiceName 2>&1 | Out-Null
-$ErrorActionPreference = 'Stop'
+Register-ScheduledTask `
+  -TaskName $ServiceName `
+  -Description 'MCP SQL Broker - alias-based MSSQL connection broker over HTTP/JSON-RPC' `
+  -Action $action `
+  -Trigger $trigger `
+  -Principal $principal `
+  -Settings $settings `
+  -Force `
+  @regArgs | Out-Null
+
+Start-ScheduledTask -TaskName $ServiceName
 
 Start-Sleep -Seconds 2
-$status = (& $NssmPath status $ServiceName 2>&1 | Out-String).Trim()
-Ok "Service '$ServiceName' status: $status"
+$task = Get-ScheduledTask -TaskName $ServiceName
+$info = Get-ScheduledTaskInfo -TaskName $ServiceName
+Ok "Scheduled task '$ServiceName' state=$($task.State) lastRun=$($info.LastRunTime) lastResult=$($info.LastTaskResult)"
 
 # --- 5) Health check ---
 $ok = $false

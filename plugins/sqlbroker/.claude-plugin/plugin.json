@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.0.0",
-  "description": "Alias-based MSSQL broker for Claude Code on Windows. A local broker holds passwords in the OS keyring (Windows Credential Manager) by alias; the conversation never carries passwords. v2 auto-migrates legacy DPAPI aliases.",
+  "version": "2.1.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows uses Task Scheduler + Credential Manager; Linux uses systemd + Secret Service; macOS uses launchd + Keychain. Passwords live in the OS keyring; the conversation never carries them. Auto-migrates v1 DPAPI aliases.",
   "author": {
     "name": "pumipat"
   },

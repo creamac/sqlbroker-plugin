@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# One-shot installer for MCP SQL Broker on Linux and macOS.
+#
+# Will:
+#   1. Verify python3 is on PATH (asks user to install if missing).
+#   2. Create a venv at $INSTALL_DIR/.venv and install pyodbc + keyring.
+#   3. Hint at ODBC Driver 18 install if no driver is present.
+#   4. Register a service:
+#        Linux  -> systemd unit at /etc/systemd/system/mcp-sqlbroker.service
+#        macOS  -> launchd plist at /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
+#   5. Start it and health-check http://127.0.0.1:8765/health.
+#
+# Run with sudo (needed to install system services).
+
+set -euo pipefail
+
+INSTALL_DIR="${INSTALL_DIR:-/opt/mcp-sqlbroker}"
+PORT="${PORT:-8765}"
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
+SERVICE_NAME="${SERVICE_NAME:-mcp-sqlbroker}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ok()   { printf '\033[32m[+]\033[0m %s\n' "$*"; }
+info() { printf '\033[36m[*]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
+fail() { printf '\033[31m[X]\033[0m %s\n' "$*" >&2; exit 1; }
+
+OS="$(uname -s)"
+case "$OS" in
+  Linux|Darwin) ;;
+  *) fail "Unsupported OS: $OS" ;;
+esac
+
+# 0) Root check (only if registering a service)
+if [[ "${1:-}" != "--skip-service" ]] && [[ "$EUID" -ne 0 ]]; then
+  fail "Run with sudo. Service registration needs root."
+fi
+
+# 1) Python
+PY="$(command -v python3 || true)"
+if [[ -z "$PY" ]]; then
+  if [[ "$OS" == "Darwin" ]]; then
+    fail "python3 not found. Install via: brew install python@3.13  (or python.org)"
+  else
+    fail "python3 not found. Install via: apt-get install -y python3 python3-venv  (or your distro's equivalent)"
+  fi
+fi
+PY_VER="$("$PY" -c 'import sys; print("%d.%d"%sys.version_info[:2])')"
+ok "python3 $PY_VER at $PY"
+
+# 2) Install dir + copy source
+mkdir -p "$INSTALL_DIR"
+for f in server.py manage_conn.py stdio_proxy.py run_stdio_proxy.sh README.md; do
+  src="$SCRIPT_DIR/$f"
+  if [[ -f "$src" ]]; then
+    cp "$src" "$INSTALL_DIR/"
+  fi
+done
+chmod +x "$INSTALL_DIR/run_stdio_proxy.sh" 2>/dev/null || true
+ok "Files copied to $INSTALL_DIR"
+
+# 3) venv + deps
+VENV="$INSTALL_DIR/.venv"
+VENV_PY="$VENV/bin/python3"
+if [[ ! -x "$VENV_PY" ]]; then
+  info "Creating venv at $VENV"
+  "$PY" -m venv "$VENV"
+fi
+"$VENV_PY" -m pip install --quiet --upgrade pip
+"$VENV_PY" -m pip install --quiet pyodbc keyring
+"$VENV_PY" -c "import pyodbc, keyring; print('deps OK')"
+ok "pyodbc and keyring ready"
+
+# 4) ODBC driver hint
+DRIVERS="$("$VENV_PY" -c 'import pyodbc; print("|".join(pyodbc.drivers()))' || true)"
+if [[ "$DRIVERS" != *"ODBC Driver 1"* ]]; then
+  if [[ "$OS" == "Darwin" ]]; then
+    warn "No ODBC driver detected. Install ODBC Driver 18 for SQL Server:"
+    warn "  brew tap microsoft/mssql-release"
+    warn "  brew install msodbcsql18 mssql-tools18"
+  else
+    warn "No ODBC driver detected. Install ODBC Driver 18 for SQL Server:"
+    warn "  https://learn.microsoft.com/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server"
+  fi
+else
+  ok "ODBC drivers detected: $DRIVERS"
+fi
+
+if [[ "${1:-}" == "--skip-service" ]]; then
+  ok "Installation finished (service registration skipped)."
+  echo "Manual usage: $VENV_PY $INSTALL_DIR/manage_conn.py add"
+  exit 0
+fi
+
+# 5) Service registration
+if [[ "$OS" == "Linux" ]]; then
+  UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+  cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=MCP SQL Broker - alias-based MSSQL connection broker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${VENV_PY} ${INSTALL_DIR}/server.py
+WorkingDirectory=${INSTALL_DIR}
+Environment=MCP_SQL_HOST=${BIND_HOST}
+Environment=MCP_SQL_PORT=${PORT}
+Environment=MCP_SQL_CONFIG=${INSTALL_DIR}/connections.json
+Environment=MCP_SQL_LOG=${INSTALL_DIR}/service.log
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "$SERVICE_NAME"
+  systemctl restart "$SERVICE_NAME"
+  ok "systemd unit registered at $UNIT_PATH"
+  systemctl --no-pager --lines 5 status "$SERVICE_NAME" || true
+
+elif [[ "$OS" == "Darwin" ]]; then
+  PLIST_PATH="/Library/LaunchDaemons/com.creamac.${SERVICE_NAME}.plist"
+  cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.creamac.${SERVICE_NAME}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${VENV_PY}</string>
+    <string>${INSTALL_DIR}/server.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>${INSTALL_DIR}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_SQL_HOST</key><string>${BIND_HOST}</string>
+    <key>MCP_SQL_PORT</key><string>${PORT}</string>
+    <key>MCP_SQL_CONFIG</key><string>${INSTALL_DIR}/connections.json</string>
+    <key>MCP_SQL_LOG</key><string>${INSTALL_DIR}/service.log</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${INSTALL_DIR}/service.out.log</string>
+  <key>StandardErrorPath</key><string>${INSTALL_DIR}/service.err.log</string>
+</dict>
+</plist>
+EOF
+  chown root:wheel "$PLIST_PATH"
+  chmod 644 "$PLIST_PATH"
+  launchctl unload "$PLIST_PATH" 2>/dev/null || true
+  launchctl load "$PLIST_PATH"
+  ok "launchd plist registered at $PLIST_PATH"
+fi
+
+# 6) Health check
+sleep 2
+ok_count=0
+for i in 1 2 3 4 5; do
+  if curl -fsS --max-time 3 "http://${BIND_HOST}:${PORT}/health" >/dev/null 2>&1; then
+    body="$(curl -fsS "http://${BIND_HOST}:${PORT}/health")"
+    ok "Health check passed: $body"
+    ok_count=1
+    break
+  fi
+  sleep 1
+done
+[[ $ok_count -eq 0 ]] && warn "Health check failed; tail $INSTALL_DIR/service.log"
+
+cat <<EOF
+
+Done. Add a connection from Claude Code:
+  /sqlbroker:add <alias>
+
+Or run the CLI directly:
+  $VENV_PY $INSTALL_DIR/manage_conn.py add
+EOF
