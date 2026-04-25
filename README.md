@@ -24,6 +24,8 @@ The skill auto-activates on any DB-query intent and routes through the broker.
 
 ## Why?
 
+### Problem 1 — credentials leak everywhere
+
 Without a broker, every MSSQL connection from an AI agent looks like one of these:
 
 ```jsonc
@@ -41,8 +43,53 @@ Without a broker, every MSSQL connection from an AI agent looks like one of thes
 ```
 
 Both leak credentials into config files, transcripts, and shell history.
-sqlbroker stores the passwords once, encrypted, and exposes only **alias
-names** through the MCP tools — `mcp__plugin_sqlbroker_sqlbroker__execute_sql(alias="prod_main", query="...")`.
+sqlbroker stores the passwords once, encrypted (master.key + Fernet), and exposes only **alias names** through MCP — `execute_sql(alias="prod_main", query="...")`.
+
+### Problem 2 — one MCP server per database eats tokens & config
+
+Without a broker, every database needs its own MCP server entry:
+
+```jsonc
+// ~/.claude.json — 5 DBs = 5 MCP servers
+"mssql_prod":      { "command": "uvx", "args": [...], "env": { ... } },
+"mssql_staging":   { "command": "uvx", "args": [...], "env": { ... } },
+"mssql_uat":       { "command": "uvx", "args": [...], "env": { ... } },
+"mssql_dev":       { "command": "uvx", "args": [...], "env": { ... } },
+"mssql_reporting": { "command": "uvx", "args": [...], "env": { ... } },
+```
+
+Cost:
+- Each MCP server's tool list is loaded into Claude context **every session**
+- 5 servers × ~5 tools = ~25 tool descriptions in your context every turn
+- 5 separate processes spawned by Claude Code on session start
+- 5 places to rotate passwords when one changes
+- Every new DB = edit `.claude.json`, restart Claude Code
+
+With sqlbroker — **one MCP server, unlimited aliases**:
+
+```jsonc
+// ~/.claude.json — one entry, forever
+"sqlbroker": { "command": "...\\run_stdio_proxy.bat" }
+```
+
+```bash
+# Add as many DBs as you want — no MCP changes, no restart
+/sqlbroker:add prod_main
+/sqlbroker:add staging_main
+/sqlbroker:add uat_main
+/sqlbroker:add dev_main
+/sqlbroker:add reporting
+# ...
+```
+
+What you save:
+- 🪙 **~225 tokens/session** (broker's 14 tool descriptions vs. N×5 from spawning N MCP servers)
+- 🚀 **One process** (broker is shared by all aliases) instead of N
+- 🔁 **No Claude Code restart** when adding a DB (broker re-reads `connections.json` per request)
+- 🛡️ **One password rotation flow** (`/sqlbroker:rotate <alias>`) for any DB
+- 🧠 **Shared connection pool** — repeat queries on the same alias reuse warm connections (~50ms saved per call after warm-up)
+
+Add a 6th, 60th, or 600th DB and the token cost stays the same.
 
 ---
 
