@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.3.0"
+SERVER_VERSION = "2.4.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -183,10 +183,13 @@ def _migrate_legacy(cfg: dict) -> bool:
                 except Exception as e:
                     log.error("DPAPI migration failed for alias '%s': %s", alias, e)
 
-    # 2) Keyring legacy (v2.0-2.2 — passwords lived in OS keyring)
+    # 2) Keyring legacy (v2.0-2.2 — passwords lived in OS keyring).
+    # Skip aliases that don't need a password at all (auth_mode=windows).
     keyring_pending = [
         a for a, c in conns.items()
-        if "password_enc" not in c and "password_dpapi" not in c
+        if "password_enc" not in c
+        and "password_dpapi" not in c
+        and c.get("auth_mode", "sql") != "windows"
     ]
     if keyring_pending:
         try:
@@ -273,18 +276,36 @@ def get_connection(alias: str, database):
             f"Unknown alias '{alias}'. Available: {sorted(conns.keys())}"
         )
     c = conns[alias]
-    pwd = get_password(alias)
+    auth_mode = c.get("auth_mode", "sql")
     driver = c.get("driver", "ODBC Driver 17 for SQL Server")
     db = database or c.get("default_database", "")
     parts = [
         f"DRIVER={{{driver}}}",
         f"SERVER={c['host']}",
-        f"UID={c['user']}",
-        f"PWD={pwd}",
         "TrustServerCertificate=yes",
         "Encrypt=no",
         "Connection Timeout=10",
     ]
+    if auth_mode == "sql":
+        # Classic SQL login — username + master.key-encrypted password
+        pwd = get_password(alias)
+        parts += [f"UID={c['user']}", f"PWD={pwd}"]
+    elif auth_mode == "windows":
+        # Trusted_Connection=yes — uses the broker process's Windows identity.
+        # NOTE: the broker service usually runs as SYSTEM, which works for
+        # local SQL Server if the SYSTEM account has DB rights, but cannot
+        # authenticate over the network. For cross-machine Windows Auth, run
+        # the service as a domain account (deploy.ps1 -ServiceUser/-Password).
+        parts.append("Trusted_Connection=yes")
+    elif auth_mode == "aad-spn":
+        # Azure AD service-principal — requires ODBC Driver 18+
+        parts += [
+            "Authentication=ActiveDirectoryServicePrincipal",
+            f"UID={c['user']}",            # client_id (UUID)
+            f"PWD={get_password(alias)}",  # client_secret
+        ]
+    else:
+        raise ValueError(f"Unknown auth_mode '{auth_mode}' for alias '{alias}'")
     if db:
         parts.append(f"DATABASE={db}")
     return pyodbc.connect(";".join(parts), timeout=10), c.get("policy", "readonly")

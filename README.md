@@ -182,6 +182,18 @@ The chat sees alias names only — never hosts, users, or passwords.
 
 The regex strips SQL string literals (`'...'`) and comments (`-- ...`, `/* ... */`) before scanning, so queries like `SELECT '/*' WHERE '*/' = 'UPDATE'` aren't false-positive blocked.
 
+## Auth modes (v2.4+)
+
+Each alias has an `auth_mode` field:
+
+| `auth_mode` | What it does | When to use | Notes |
+|---|---|---|---|
+| `sql` (default) | Username + master.key-encrypted password | Most environments | Works on all OS |
+| `windows` | `Trusted_Connection=yes` — uses the **broker process's** Windows identity | On-prem MSSQL with Windows Auth | Service must run as a Windows account that has DB access. SYSTEM (default) only works for **local** SQL Server; for cross-machine, run as a domain user via `deploy.ps1 -ServiceUser/-ServicePassword`. |
+| `aad-spn` | Azure AD service principal | Azure SQL Database / Managed Instance | Requires ODBC Driver 18+. `user` = `client_id` (UUID), password = `client_secret` |
+
+Set with `--auth-mode` flag on `manage_conn.py add`, or pick from the `AskUserQuestion` form on `/sqlbroker:add`.
+
 ---
 
 ## Migrating from v1.x or v2.0–2.2
@@ -341,9 +353,10 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | Version | Status | Theme |
 |---|---|---|
 | v2.3.1 | ✅ shipped | master.key encryption, Task Scheduler / launchd / systemd, rotate command |
-| **v2.4** | 🛠️ planned | **Windows Authentication** — `Trusted_Connection=yes` / Integrated Security; AAD interactive + AAD service-principal for Azure SQL |
-| v2.5 | idea | Connection-pool reuse inside the broker (saves ODBC handshake per query) |
-| v2.6 | idea | Per-alias query timeout + concurrency limit |
+| **v2.4.0** | ✅ shipped | **Windows Authentication** (`Trusted_Connection=yes`) + **Azure AD service principal**. Schema field `auth_mode: sql \| windows \| aad-spn`. |
+| v2.5 | idea | Azure AD interactive auth (browser MFA) |
+| v2.6 | idea | Connection-pool reuse inside the broker (saves ODBC handshake per query) |
+| v2.7 | idea | Per-alias query timeout + concurrency limit |
 | v3.0 | idea | Optional auth token between Claude and the broker (for multi-user / shared hosts) |
 
 Open issues / PRs welcome at https://github.com/creamac/sqlbroker-plugin/issues

@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.3.0",
-  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows Task Scheduler / Linux systemd / macOS launchd. Passwords are encrypted with a per-install random AES-128-CBC + HMAC key (master.key) so the service can decrypt regardless of run-context (SYSTEM / root / user). The conversation never carries credentials. v2.3 auto-migrates v1 (DPAPI) and v2.0-2.2 (keyring) aliases on first start.",
+  "version": "2.4.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows Task Scheduler / Linux systemd / macOS launchd. Three auth modes: SQL login (default), Windows Authentication (Trusted_Connection), Azure AD service principal. Passwords encrypted with a per-install master.key (AES-128-CBC + HMAC). Auto-migrates v1 DPAPI and v2.0-2.2 keyring aliases.",
   "author": {
     "name": "pumipat"
   },

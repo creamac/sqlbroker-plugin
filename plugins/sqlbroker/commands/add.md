@@ -9,31 +9,44 @@ Add a new MSSQL connection alias to mcp-sqlbroker. Args: $ARGUMENTS.
 
 1. **Alias name** — if `$ARGUMENTS` is empty, ask the user (short, snake_case: `prod_main`, `staging_db`).
 
-2. **Host, user, default_database** — ask the user one at a time in chat (free-text):
-   - host (e.g. `192.168.1.10\INSTANCE` or `host,1433`)
-   - user (SQL login)
-   - default_database (optional — blank to skip)
+2. **Auth mode** — use `AskUserQuestion` with these options:
+   - `SQL login (Recommended)` — username + password (most common)
+   - `Windows Authentication` — Trusted_Connection; broker process identity is used. **Warn:** the broker runs as SYSTEM by default — only works for local SQL Server unless deploy.ps1 was given `-ServiceUser/-ServicePassword` to run as a domain account.
+   - `Azure AD service principal` — for Azure SQL DB / Managed Instance; needs ODBC 18+, client_id + client_secret.
 
-3. **Policy** — use the `AskUserQuestion` tool with these options:
-   - `readonly (Recommended)` — block DML/DDL/EXEC; SELECT only
-   - `exec-only` — SELECT + EXEC stored procedures; block DML/DDL
-   - `full` — anything (use only for test sandboxes)
+3. **Host** — chat free-text. Examples:
+   - `192.168.1.10\INSTANCE`, `host,1433`, `tcp:host.database.windows.net,1433` (Azure)
 
-4. **Password** — DO NOT collect via chat (lands in transcript). Instead, print the exact command for the user to run in their own terminal — `manage_conn.py add` will prompt for the password securely with `getpass`:
+4. **User / password (depends on auth mode):**
+   - **SQL login** → ask user via chat; password collected by user in their terminal (step 6)
+   - **Windows** → skip — no user/password fields needed
+   - **AAD service principal** → user = `client_id` (UUID); password = `client_secret` (collected in terminal)
 
+5. **default_database** — chat (optional, blank to skip). **Policy** — `AskUserQuestion`: `readonly (Recommended)` / `exec-only` / `full`.
+
+6. **Password** — DO NOT collect via chat. Print the command for the user to run in their own terminal — `manage_conn.py` prompts for password via `getpass` (hidden input):
+
+   **SQL login:**
    ```powershell
    D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py add <alias> ^
-       --host '<host>' --user '<user>' --database '<db_or_empty>' --policy <policy> --force
+       --host '<host>' --user '<user>' --database '<db>' --policy <policy> --auth-mode sql --force
    ```
 
-   ```bash
-   /opt/mcp-sqlbroker/.venv/bin/python3 /opt/mcp-sqlbroker/manage_conn.py add <alias> \
-       --host '<host>' --user '<user>' --database '<db_or_empty>' --policy <policy> --force
+   **Windows auth (no password):**
+   ```powershell
+   D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py add <alias> ^
+       --host '<host>' --database '<db>' --policy <policy> --auth-mode windows --force
    ```
 
-   The `--force` flag overwrites an existing alias; the script omits `--password`, so it prompts via `getpass.getpass()` (hidden input on the user's terminal).
+   **Azure AD service principal:**
+   ```powershell
+   D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py add <alias> ^
+       --host '<host>' --user '<client_id>' --database '<db>' --policy <policy> --auth-mode aad-spn --force
+   ```
 
-5. After the user reports it ran successfully, verify with `/sqlbroker:test <alias>`.
+   Linux/Mac: replace `D:\util\mcp-sqlbroker\python313\python.exe` with `/opt/mcp-sqlbroker/.venv/bin/python3` and use `\` line-continuations.
+
+7. After the user reports it ran successfully, verify with `/sqlbroker:test <alias>`.
 
 ## Safety
 

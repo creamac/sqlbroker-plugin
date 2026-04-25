@@ -46,8 +46,33 @@ def cmd_add(args):
         sys.exit(f"alias '{alias}' already exists. Use --force to overwrite.")
 
     host = args.host or input("host (e.g. 192.168.1.10\\SQLINSTANCE or db.example.com,1433): ").strip()
-    user = args.user or input("user: ").strip()
-    pwd = args.password if args.password is not None else getpass.getpass("password: ")
+    auth_mode = (
+        args.auth_mode
+        or input("auth_mode (sql|windows|aad-spn) [sql]: ").strip()
+        or "sql"
+    )
+    if auth_mode not in ("sql", "windows", "aad-spn"):
+        sys.exit(f"Invalid auth_mode: {auth_mode}")
+
+    user = ""
+    pwd = None
+    if auth_mode == "sql":
+        user = args.user or input("user: ").strip()
+        pwd = args.password if args.password is not None else getpass.getpass("password: ")
+    elif auth_mode == "aad-spn":
+        user = args.user or input("client_id (UUID of service principal): ").strip()
+        pwd = (
+            args.password
+            if args.password is not None
+            else getpass.getpass("client_secret: ")
+        )
+    elif auth_mode == "windows":
+        # No user / password — broker uses its own Windows identity
+        if args.user:
+            print("Note: --user is ignored for windows auth (uses broker process identity)")
+        if args.password is not None:
+            print("Note: --password is ignored for windows auth")
+
     db = (
         args.database
         if args.database is not None
@@ -60,19 +85,40 @@ def cmd_add(args):
     )
     if policy not in ("readonly", "full", "exec-only"):
         sys.exit(f"Invalid policy: {policy}")
-    driver = args.driver or "ODBC Driver 17 for SQL Server"
+    # Default driver: ODBC 17 for sql/windows, ODBC 18 for aad-spn (required)
+    driver = args.driver or (
+        "ODBC Driver 18 for SQL Server" if auth_mode == "aad-spn"
+        else "ODBC Driver 17 for SQL Server"
+    )
 
-    store_password(alias, pwd)
-    cfg["connections"][alias] = {
+    entry = {
         "host": host,
-        "user": user,
+        "auth_mode": auth_mode,
         "default_database": db,
         "policy": policy,
         "driver": driver,
     }
+    if user:
+        entry["user"] = user
+    cfg["connections"][alias] = entry
     save(cfg)
-    print(f"Added alias '{alias}' (host={host}, user={user}, policy={policy}); "
-          f"password saved to OS keyring")
+    # store_password() does its own read-modify-write of connections.json,
+    # so it MUST run after save(cfg) above — otherwise the entry-write
+    # would clobber the password_enc field that store_password just added.
+    if pwd is not None:
+        store_password(alias, pwd)
+
+    if auth_mode == "windows":
+        print(
+            f"Added alias '{alias}' (host={host}, policy={policy}, auth=windows). "
+            "NOTE: the broker service must run as a Windows account that has SQL "
+            "access. SYSTEM works for local SQL Server only; for cross-machine "
+            "Windows Auth, run the service as a domain user via "
+            "deploy.ps1 -ServiceUser/-ServicePassword."
+        )
+        return
+    print(f"Added alias '{alias}' (host={host}, user={user}, policy={policy}, auth={auth_mode}); "
+          f"password encrypted to master.key")
 
 
 def cmd_list(_args):
@@ -175,6 +221,13 @@ def main():
     a.add_argument("--database")
     a.add_argument("--policy", choices=["readonly", "full", "exec-only"])
     a.add_argument("--driver")
+    a.add_argument(
+        "--auth-mode",
+        dest="auth_mode",
+        choices=["sql", "windows", "aad-spn"],
+        help="Auth mode (default: sql). 'windows' = Trusted_Connection (no user/password). "
+             "'aad-spn' = Azure AD service principal (user=client_id, password=client_secret).",
+    )
     a.add_argument("--force", action="store_true")
     a.set_defaults(func=cmd_add)
 
