@@ -167,18 +167,26 @@ The chat sees alias names only — never hosts, users, or passwords.
 | `/sqlbroker:remove <alias>` | Delete alias from config |
 | `/sqlbroker:status` | Service health + alias list (3-step check) |
 
-## MCP tools (auto-routed via the skill)
+## MCP tools (auto-routed via the skill — 11 total)
 
 **Core:**
 - `list_aliases()` — configured aliases, no credentials
 - `list_databases(alias)` — DBs visible to the alias's login
 - `execute_sql(alias, query, database?, max_rows?)` — run T-SQL, subject to policy
 
+**Server / runtime (v2.6):**
+- `get_server_info(alias, database?)` — version (`2008/.../2022`), edition, instance, host, collation, uptime
+- `get_active_queries(alias, top_n?, database?)` — currently-running queries (sys.dm_exec_requests)
+
 **Schema introspection (v2.5):**
 - `list_objects(alias, name_pattern, type, database?)` — find procs/tables/views by `LIKE` pattern
-- `get_definition(alias, object_name, database?)` — source CREATE statement of a proc/view/function/trigger
-- `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + indexes in one call
-- `get_dependencies(alias, object_name, database?)` — both directions: what an object uses, what uses it
+- `get_definition(alias, object_name, database?)` — source CREATE statement
+- `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + indexes
+- `get_dependencies(alias, object_name, database?)` — both directions: uses + used_by
+- `find_in_definitions(alias, search_text, type?, database?)` — full-text grep across proc/view/function bodies
+
+**Data (v2.6):**
+- `preview_table(alias, table_name, top_n?, database?)` — safe `SELECT TOP n *`
 
 All tools auto-prefix `mcp__plugin_sqlbroker_sqlbroker__` when called by Claude.
 
@@ -364,9 +372,11 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 |---|---|---|
 | v2.3.1 | ✅ shipped | master.key encryption, Task Scheduler / launchd / systemd, rotate command |
 | v2.4.0 | ✅ shipped | Windows Authentication + Azure AD service principal (`auth_mode` field) |
-| **v2.5.0** | ✅ shipped | **Schema introspection MCP tools** (`list_objects`, `get_definition`, `get_table_schema`, `get_dependencies`) + **connection pool** + `/sqlbroker:update` plugin-refresh slash command + deploy `-RefreshOnly` mode |
-| v2.6 | idea | Azure AD interactive auth (device code flow) |
-| v2.7 | idea | Per-alias query timeout + concurrency limit |
+| v2.5.0 | ✅ shipped | Schema introspection (4 tools) + connection pool + `/sqlbroker:update` |
+| **v2.6.0** | ✅ shipped | **+4 tools**: `get_server_info` (version detection), `find_in_definitions` (full-text grep), `preview_table` (safe SELECT TOP n), `get_active_queries` (running queries DMV) |
+| v2.7 | idea | Azure AD interactive auth (device code flow) |
+| v2.8 | idea | Per-alias query timeout + concurrency limit |
+| v2.9 | idea | `compare_definitions(alias_a, alias_b, object_name)` — schema diff |
 | v3.0 | idea | Optional auth token between Claude and the broker (for multi-user / shared hosts) |
 
 Open issues / PRs welcome at https://github.com/creamac/sqlbroker-plugin/issues

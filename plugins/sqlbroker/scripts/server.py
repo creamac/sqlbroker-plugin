@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.5.0"
+SERVER_VERSION = "2.6.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -604,6 +604,179 @@ def tool_get_dependencies(args):
         }
 
 
+# ---------- Server / data tools (v2.6) ----------
+_ENGINE_EDITION = {
+    1: "Personal/Desktop", 2: "Standard", 3: "Enterprise", 4: "Express",
+    5: "Azure SQL Database", 6: "Azure Synapse", 8: "Azure SQL Managed Instance",
+    9: "Azure SQL Edge", 11: "Azure SQL Hyperscale",
+}
+
+
+def tool_get_server_info(args):
+    alias = args["alias"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(50)) AS version,
+                CAST(SERVERPROPERTY('ProductLevel') AS NVARCHAR(50))   AS patch_level,
+                CAST(SERVERPROPERTY('Edition') AS NVARCHAR(100))       AS edition,
+                CAST(SERVERPROPERTY('EngineEdition') AS INT)           AS engine_edition,
+                CAST(SERVERPROPERTY('InstanceName') AS NVARCHAR(100))  AS instance,
+                CAST(SERVERPROPERTY('MachineName') AS NVARCHAR(100))   AS machine,
+                CAST(SERVERPROPERTY('Collation') AS NVARCHAR(100))     AS collation,
+                CAST(SERVERPROPERTY('IsClustered') AS INT)             AS is_clustered,
+                CAST(SERVERPROPERTY('IsHadrEnabled') AS INT)           AS is_hadr,
+                @@VERSION                                              AS version_string
+        """)
+        r = cur.fetchone()
+        if not r:
+            return {"error": "no info"}
+        ver = r[0]
+        major = int(ver.split(".")[0]) if ver else None
+        # SQL Server major version → product year
+        ver_name_map = {9: "2005", 10: "2008/2008R2", 11: "2012", 12: "2014",
+                        13: "2016", 14: "2017", 15: "2019", 16: "2022"}
+        # Uptime (DMV; SQL 2005+)
+        uptime_seconds = None
+        try:
+            cur.execute("SELECT DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) FROM sys.dm_os_sys_info")
+            uptime_seconds = cur.fetchone()[0]
+        except Exception:
+            pass
+        return {
+            "version": ver,
+            "version_major": major,
+            "version_name": ver_name_map.get(major, "unknown"),
+            "patch_level": r[1],
+            "edition": r[2],
+            "engine_edition": _ENGINE_EDITION.get(r[3], f"unknown({r[3]})"),
+            "instance": r[4],
+            "machine": r[5],
+            "collation": r[6],
+            "is_clustered": bool(r[7]),
+            "is_hadr_enabled": bool(r[8]),
+            "uptime_seconds": uptime_seconds,
+            "version_string": (r[9].splitlines()[0] if r[9] else None),
+        }
+
+
+def tool_find_in_definitions(args):
+    alias = args["alias"]
+    search = args["search_text"]
+    types = _OBJECT_TYPE_MAP.get(args.get("type", "any"), None)
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        params = [f"%{search}%"]
+        sql = (
+            "SELECT s.name + '.' + o.name AS qname, o.type_desc, "
+            "       LEN(m.definition) AS definition_length "
+            "FROM sys.sql_modules m "
+            "JOIN sys.objects o ON o.object_id = m.object_id "
+            "JOIN sys.schemas s ON s.schema_id = o.schema_id "
+            "WHERE m.definition LIKE ? AND o.is_ms_shipped = 0 "
+        )
+        if types:
+            placeholders = ",".join(["?"] * len(types))
+            sql += f"AND o.type IN ({placeholders}) "
+            params.extend(types)
+        sql += "ORDER BY o.name"
+        cur.execute(sql, params)
+        rows = [{"name": r[0], "type": r[1], "definition_length": r[2]}
+                for r in cur.fetchall()]
+        return {"search_text": search, "matches": rows, "count": len(rows)}
+
+
+def tool_preview_table(args):
+    alias = args["alias"]
+    table = args["table_name"]
+    top_n = int(args.get("top_n", 10))
+    if top_n < 1 or top_n > 1000:
+        raise ValueError("top_n must be between 1 and 1000")
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        # Validate the object exists and is a table or view, then build a
+        # safely-bracketed schema.name from sys.objects (no string concat
+        # of user input into the FROM clause).
+        cur.execute(
+            "SELECT s.name AS schema_name, o.name AS object_name, o.type_desc "
+            "FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id "
+            "WHERE o.object_id = OBJECT_ID(?) "
+            "  AND (OBJECTPROPERTY(o.object_id, 'IsTable') = 1 "
+            "    OR OBJECTPROPERTY(o.object_id, 'IsView') = 1) ",
+            table,
+        )
+        row = cur.fetchone()
+        if not row:
+            # OBJECTPROPERTY check failed — try a system-catalog fallback by
+            # parsing schema.name from input (sys.* views aren't in sys.objects
+            # with the usual type codes but OBJECT_ID() resolves them).
+            cur.execute("SELECT OBJECT_ID(?)", table)
+            oid = cur.fetchone()[0]
+            if not oid:
+                return {"error": f"Table or view '{table}' not found"}
+            cur.execute(
+                "SELECT OBJECT_SCHEMA_NAME(?), OBJECT_NAME(?)", oid, oid,
+            )
+            sn, on = cur.fetchone()
+            if not sn or not on:
+                return {"error": f"Could not resolve schema/name for '{table}'"}
+            schema_name, obj_name, obj_type = sn, on, "SYSTEM_OR_CATALOG_VIEW"
+        else:
+            schema_name, obj_name, obj_type = row
+        # Bracket-escape: ] in identifiers becomes ]]
+        safe = "[{}].[{}]".format(
+            schema_name.replace("]", "]]"),
+            obj_name.replace("]", "]]"),
+        )
+        cur.execute(f"SELECT TOP ({top_n}) * FROM {safe}")
+        cols = [d[0] for d in cur.description]
+        rows = [{cols[i]: _coerce(r[i]) for i in range(len(cols))}
+                for r in cur.fetchall()]
+        return {
+            "object_name": f"{schema_name}.{obj_name}",
+            "type": obj_type,
+            "columns": cols,
+            "rows": rows,
+            "count": len(rows),
+        }
+
+
+def tool_get_active_queries(args):
+    alias = args["alias"]
+    top_n = int(args.get("top_n", 50))
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT TOP ({top_n})
+                r.session_id,
+                r.blocking_session_id,
+                r.status,
+                r.command,
+                r.wait_type,
+                r.wait_time,
+                r.cpu_time,
+                r.total_elapsed_time,
+                r.reads,
+                r.writes,
+                r.logical_reads,
+                DB_NAME(r.database_id) AS db,
+                SUBSTRING(t.text, (r.statement_start_offset/2)+1,
+                  CASE WHEN r.statement_end_offset = -1 THEN DATALENGTH(t.text)/2
+                       ELSE (r.statement_end_offset - r.statement_start_offset)/2 + 1 END
+                ) AS sql_text
+            FROM sys.dm_exec_requests r
+            OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+            WHERE r.session_id <> @@SPID
+              AND r.session_id > 50
+            ORDER BY r.total_elapsed_time DESC
+        """)
+        cols = [d[0] for d in cur.description]
+        rows = [{cols[i]: _coerce(r[i]) for i in range(len(cols))}
+                for r in cur.fetchall()]
+        return {"queries": rows, "count": len(rows)}
+
+
 def tool_execute_sql(args):
     alias = args["alias"]
     database = args.get("database")
@@ -765,6 +938,76 @@ TOOLS = {
             },
         },
         "fn": tool_get_dependencies,
+    },
+    "get_server_info": {
+        "spec": {
+            "name": "get_server_info",
+            "description": "Server fingerprint: SQL Server version (major name, e.g. 2016/2019), edition, instance, host, collation, uptime. Run this first when you need to pick version-compatible queries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":    {"type": "string"},
+                    "database": {"type": "string"},
+                },
+                "required": ["alias"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_server_info,
+    },
+    "find_in_definitions": {
+        "spec": {
+            "name": "find_in_definitions",
+            "description": "Full-text grep across proc/view/function/trigger bodies. Use this when the user asks 'find all procs that touch table X' or 'which views reference column Y'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":       {"type": "string"},
+                    "database":    {"type": "string"},
+                    "search_text": {"type": "string", "description": "Substring to search for inside object definitions."},
+                    "type":        {"type": "string", "default": "any",
+                                    "enum": ["proc", "view", "function", "trigger", "any"]},
+                },
+                "required": ["alias", "search_text"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_find_in_definitions,
+    },
+    "preview_table": {
+        "spec": {
+            "name": "preview_table",
+            "description": "Safe SELECT TOP n * from a table or view. Use this for quick peeks instead of asking the user to write SELECT.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":      {"type": "string"},
+                    "database":   {"type": "string"},
+                    "table_name": {"type": "string"},
+                    "top_n":      {"type": "integer", "default": 10, "minimum": 1, "maximum": 1000},
+                },
+                "required": ["alias", "table_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_preview_table,
+    },
+    "get_active_queries": {
+        "spec": {
+            "name": "get_active_queries",
+            "description": "Currently-running queries on the server (sys.dm_exec_requests + dm_exec_sql_text). Excludes the broker's own session and system sessions. Use for debugging slow ops or blocking.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":    {"type": "string"},
+                    "database": {"type": "string"},
+                    "top_n":    {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
+                },
+                "required": ["alias"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_active_queries,
     },
 }
 

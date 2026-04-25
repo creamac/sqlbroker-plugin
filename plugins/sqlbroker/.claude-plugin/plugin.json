@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.5.0",
-  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Task Scheduler / systemd / launchd. Three auth modes: SQL / Windows Auth / Azure AD SPN. v2.5 adds 4 schema-introspection MCP tools (list_objects, get_definition, get_table_schema, get_dependencies) and a connection pool. Plugin /sqlbroker:update slash command refreshes the deployed broker after plugin upgrades.",
+  "version": "2.6.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Task Scheduler / systemd / launchd. Three auth modes: SQL / Windows Auth / Azure AD SPN. v2.6 adds 4 more MCP tools — get_server_info (version detection), find_in_definitions (full-text grep over proc/view bodies), preview_table (safe SELECT TOP n), get_active_queries (running queries). 11 MCP tools total + connection pool.",
   "author": {
     "name": "pumipat"
   },

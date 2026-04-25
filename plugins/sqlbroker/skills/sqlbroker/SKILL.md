@@ -18,25 +18,40 @@ A Windows service on this machine at `http://127.0.0.1:8765/mcp` that brokers MS
 
 ## When to invoke this skill
 
-Trigger any time the user wants to interact with an MSSQL database that is (or should be) configured as an alias on this machine. Examples:
+Trigger any time the user wants to interact with an MSSQL database that is (or should be) configured as an alias on this machine. Examples by intent:
 
-- "query DB X", "select from Y", "ดู proc ใน DB Z", "เช็ค table ..."
-- "list databases on prod_main"
-- "หาว่ามี usp ตระกูล _approve กี่ตัว"
-- "test connection to <alias>"
-- "เพิ่ม alias ใหม่", "ลบ alias", "เปลี่ยน policy เป็น readonly"
+- **Browse/discover** — "query DB X", "select from Y", "list databases on prod_main", "หาว่ามี usp ตระกูล _approve กี่ตัว", "เช็ค table"
+- **Inspect a proc/view** — "ดู definition ของ usp_foo", "what does proc bar do?"
+- **Inspect a table** — "schema ของ t_orders", "what columns does X have?", "indexes on table Y"
+- **Trace dependencies** — "what tables does proc X read?", "ใครเรียก usp_foo บ้าง"
+- **Connections** — "test alias", "เพิ่ม alias ใหม่", "ลบ alias", "rotate password", "เปลี่ยน policy"
 
 If the user references a database/server that is *not* yet an alias, ask whether to add it before doing anything else. Do not silently fall back to entering credentials in the conversation.
 
-## MCP tools (preferred path)
+## Tool selection (prefer the most specific tool)
 
-When `mcpServers.sqlbroker` is wired into Claude Code, three tools are exposed:
+When the broker is wired into Claude Code (via `mcpServers.sqlbroker`), 11 MCP tools are exposed. **Pick the most specific one — don't fall back to `execute_sql` if a dedicated tool fits.**
 
-- `mcp__sqlbroker__list_aliases` — list configured aliases (no credentials)
-- `mcp__sqlbroker__list_databases(alias)` — list DBs visible to that alias's login
-- `mcp__sqlbroker__execute_sql(alias, query, database?, max_rows?)` — run T-SQL; subject to the alias's policy
+**Connection / metadata:**
+- `list_aliases()` — configured aliases (no credentials)
+- `list_databases(alias)` — DBs visible to the alias's login
+- `get_server_info(alias, database?)` — version (`2008/2012/2014/2016/2017/2019/2022`), edition, instance, host, collation, uptime. **Run this first** when you need to pick version-compatible queries (e.g. STRING_AGG only on 2017+).
 
-Use these directly; do not run `sqlcmd` / raw connection strings.
+**Schema introspection (preferred over hand-written `sys.*` queries):**
+- `list_objects(alias, name_pattern, type, database?)` — find procs/tables/views/functions/triggers by `LIKE` pattern. **Use this** when the user says "find procs matching ...", "ลิสต์ทุก table ที่ ...", "หา view ที่ ..."
+- `get_definition(alias, object_name, database?)` — source CREATE statement. **Use this** when user asks "show me proc X", "ดู definition", "what does X do?"
+- `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + non-PK indexes in one call. **Use this** when user asks "what columns does X have?", "schema ของ ...", "indexes on ..."
+- `get_dependencies(alias, object_name, database?)` — both directions: what an object uses + what uses it. **Use this** when user asks "what does proc X read/write?", "ใครเรียก usp_foo", "trace dependencies"
+- `find_in_definitions(alias, search_text, type?, database?)` — full-text grep across all proc/view/function/trigger bodies. **Use this** when user asks "find all procs that touch table X", "which views reference column Y", "หา proc ที่มีคำว่า ..."
+
+**Data / runtime:**
+- `preview_table(alias, table_name, top_n=10, database?)` — safe `SELECT TOP n *` from a table/view. **Use this** for quick peeks; do NOT hand-craft `SELECT TOP n *` via execute_sql — preview_table validates the object exists first and bracket-escapes the name.
+- `get_active_queries(alias, top_n=50, database?)` — currently-running queries (sys.dm_exec_requests). **Use this** when debugging "what's slow right now?", "ใครยึด lock", blocking analysis.
+
+**Catch-all:**
+- `execute_sql(alias, query, database?, max_rows?)` — run T-SQL; subject to the alias's `readonly | exec-only | full` policy. Only use when no specific tool fits (custom joins across catalog views, multi-result-set procs, etc.)
+
+Tools are auto-prefixed `mcp__plugin_sqlbroker_sqlbroker__` when called.
 
 ## Manual HTTP fallback (when MCP not wired)
 
