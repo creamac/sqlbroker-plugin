@@ -22,6 +22,62 @@ The skill auto-activates on any DB-query intent and routes through the broker.
 
 ---
 
+## Quickstart
+
+> 5 minutes from zero to your first SQL query.
+
+### 0) Prerequisites per OS
+
+| OS | Need yourself | Auto-installed by `deploy` |
+|---|---|---|
+| **Windows** | Claude Code, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task |
+| **macOS** | Claude Code, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `pycryptodome`, launchd plist. ODBC: `brew install msodbcsql18` (manual) |
+| **Linux** | Claude Code, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `pycryptodome`, systemd unit. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
+
+### 1) Install the plugin (every OS)
+
+```
+/plugin marketplace add creamac/sqlbroker-plugin
+/plugin install sqlbroker@creamac/sqlbroker-plugin
+/reload-plugins
+```
+
+### 2) Install the local service
+
+```
+/sqlbroker:install
+```
+
+Picks the right deploy script for your OS and runs it elevated.
+- **Windows** — UAC dialog → Yes. Embedded Python + ODBC + Scheduled Task all auto-installed.
+- **macOS / Linux** — `sudo` password. Uses your system `python3`, registers launchd plist or systemd unit.
+
+The script ends by patching `~/.claude.json` with the MCP wiring (auto-confirm with `-AutoWire` / `--auto-wire`).
+
+### 3) Add your first connection
+
+```
+/sqlbroker:add prod_main
+```
+
+Claude collects host / user / db / policy in chat (policy via the `AskUserQuestion` form). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
+
+### 4) Use it
+
+Just ask Claude things like:
+
+```
+"list_databases ของ prod_main"
+"select count(*) from t_orders where created_at > '2026-01-01' on staging_main"
+"เช็ค proc ที่มี audit ใน billing_db บน prod_main"
+"ดู definition ของ usp_FsData_Approve_Workflow บน prod_main"
+"compare definition ของ usp_X ระหว่าง staging_main กับ prod_main"
+```
+
+The skill auto-routes to the right MCP tool — no need to remember tool names.
+
+---
+
 ## Why?
 
 ### Problem 1 — credentials leak everywhere
@@ -122,55 +178,6 @@ Auth (v2.4+): **SQL login** (verified, default), **Windows Authentication** (`Tr
 ### Claude Code
 
 Tested with the marketplace + plugin slash command flow on Claude Code Desktop. Plugin manifest version is 1.0+; works with the `/plugin install <plugin>@<owner>/<repo>` syntax.
-
----
-
-## Quickstart
-
-### 0) Prerequisites per OS
-
-| OS | Need yourself | Auto-installed |
-|---|---|---|
-| **Windows** | Claude Code, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task |
-| **macOS** | Claude Code, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `pycryptodome`, launchd plist. ODBC: `brew install msodbcsql18` (manual) |
-| **Linux** | Claude Code, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `pycryptodome`, systemd unit. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
-
-### 1) Install the plugin
-
-```
-/plugin marketplace add creamac/sqlbroker-plugin
-/plugin install sqlbroker@creamac/sqlbroker-plugin
-/reload-plugins
-```
-
-### 2) Install the local service
-
-```
-/sqlbroker:install
-```
-
-Picks the right deploy script for your OS and runs it elevated. The script:
-
-- **Windows** — downloads embedded Python + ODBC Driver 18, registers a Scheduled Task, starts it, optionally patches `~/.claude.json` with the MCP wiring entry. UAC dialog → click Yes.
-- **macOS / Linux** — uses your system `python3`, builds a venv, registers a launchd plist or systemd unit. `sudo` password required.
-
-### 3) Add your first connection
-
-```
-/sqlbroker:add prod_main
-```
-
-Claude collects host / user / db / policy in chat (policy via the `AskUserQuestion` form). Then it prints a **single command for you to run in your own terminal** — that's where `getpass` prompts for the password. Password never enters the chat or shell history.
-
-### 4) Use it
-
-```
-"list_databases ของ prod_main"
-"select count(*) from t_orders where created_at > '2026-01-01' on staging_main"
-"เช็ค proc ที่มี audit ใน billing_db บน prod_main"
-```
-
-The skill picks up the intent and routes through `mcp__plugin_sqlbroker_sqlbroker__execute_sql`.
 
 ---
 
