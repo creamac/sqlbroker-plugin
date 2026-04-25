@@ -59,6 +59,24 @@ done
 chmod +x "$INSTALL_DIR/run_stdio_proxy.sh" 2>/dev/null || true
 ok "Files copied to $INSTALL_DIR"
 
+# Refresh-only mode: skip venv/deps/service registration, just bounce service
+if [[ "${1:-}" == "--refresh-only" ]]; then
+  info "--refresh-only: skipping venv/deps/service registration"
+  if [[ "$OS" == "Linux" ]]; then
+    systemctl restart "$SERVICE_NAME" || fail "systemctl restart failed"
+  elif [[ "$OS" == "Darwin" ]]; then
+    launchctl unload  "/Library/LaunchDaemons/com.creamac.${SERVICE_NAME}.plist" 2>/dev/null || true
+    launchctl load    "/Library/LaunchDaemons/com.creamac.${SERVICE_NAME}.plist"
+  fi
+  sleep 2
+  if curl -fsS --max-time 5 "http://${BIND_HOST}:${PORT}/health" >/dev/null 2>&1; then
+    ok "Refresh complete; service is healthy."
+  else
+    fail "Health check failed after refresh. Tail $INSTALL_DIR/service.log"
+  fi
+  exit 0
+fi
+
 # 3) venv + deps
 VENV="$INSTALL_DIR/.venv"
 VENV_PY="$VENV/bin/python3"

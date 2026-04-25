@@ -8,9 +8,9 @@
     {
       "name": "sqlbroker",
       "source": "./plugins/sqlbroker",
-      "description": "Alias-based MSSQL broker for Claude Code, cross-platform (Windows / macOS / Linux). Three auth modes: SQL login, Windows Authentication (Trusted_Connection), Azure AD service principal. Passwords encrypted with a per-install master.key (AES-128-CBC + HMAC) — service-as-daemon can decrypt regardless of run-context. Service installers: Task Scheduler / launchd / systemd (no NSSM). Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:rotate, /sqlbroker:remove, /sqlbroker:status.",
+      "description": "Alias-based MSSQL broker for Claude Code, cross-platform (Windows / macOS / Linux). Three auth modes: SQL login, Windows Authentication, Azure AD service principal. Schema introspection MCP tools (list_objects, get_definition, get_table_schema, get_dependencies) plus connection pool make stored-procedure exploration painless. Service installers: Task Scheduler / launchd / systemd (no NSSM). Includes /sqlbroker:install, /sqlbroker:update, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:rotate, /sqlbroker:remove, /sqlbroker:status.",
       "category": "database",
-      "version": "2.4.0",
+      "version": "2.5.0",
       "tags": ["mssql", "sql-server", "mcp", "broker", "encryption", "cross-platform"]
     }
   ]

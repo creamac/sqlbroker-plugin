@@ -159,6 +159,7 @@ The chat sees alias names only — never hosts, users, or passwords.
 | Command | Purpose |
 |---|---|
 | `/sqlbroker:install` | Install the local service (deploy.ps1 / deploy.sh elevated) |
+| `/sqlbroker:update` | Refresh broker code after a plugin upgrade (skips Python/ODBC/NSSM) |
 | `/sqlbroker:add <alias>` | Add a new alias — chat for non-secrets, terminal for password |
 | `/sqlbroker:list` | List all aliases (no credentials) |
 | `/sqlbroker:test <alias>` | Run a 4-column identity query against the alias |
@@ -168,9 +169,18 @@ The chat sees alias names only — never hosts, users, or passwords.
 
 ## MCP tools (auto-routed via the skill)
 
-- `mcp__plugin_sqlbroker_sqlbroker__list_aliases()`
-- `mcp__plugin_sqlbroker_sqlbroker__list_databases(alias)`
-- `mcp__plugin_sqlbroker_sqlbroker__execute_sql(alias, query, database?, max_rows?)`
+**Core:**
+- `list_aliases()` — configured aliases, no credentials
+- `list_databases(alias)` — DBs visible to the alias's login
+- `execute_sql(alias, query, database?, max_rows?)` — run T-SQL, subject to policy
+
+**Schema introspection (v2.5):**
+- `list_objects(alias, name_pattern, type, database?)` — find procs/tables/views by `LIKE` pattern
+- `get_definition(alias, object_name, database?)` — source CREATE statement of a proc/view/function/trigger
+- `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + indexes in one call
+- `get_dependencies(alias, object_name, database?)` — both directions: what an object uses, what uses it
+
+All tools auto-prefix `mcp__plugin_sqlbroker_sqlbroker__` when called by Claude.
 
 ## Policies
 
@@ -353,9 +363,9 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | Version | Status | Theme |
 |---|---|---|
 | v2.3.1 | ✅ shipped | master.key encryption, Task Scheduler / launchd / systemd, rotate command |
-| **v2.4.0** | ✅ shipped | **Windows Authentication** (`Trusted_Connection=yes`) + **Azure AD service principal**. Schema field `auth_mode: sql \| windows \| aad-spn`. |
-| v2.5 | idea | Azure AD interactive auth (browser MFA) |
-| v2.6 | idea | Connection-pool reuse inside the broker (saves ODBC handshake per query) |
+| v2.4.0 | ✅ shipped | Windows Authentication + Azure AD service principal (`auth_mode` field) |
+| **v2.5.0** | ✅ shipped | **Schema introspection MCP tools** (`list_objects`, `get_definition`, `get_table_schema`, `get_dependencies`) + **connection pool** + `/sqlbroker:update` plugin-refresh slash command + deploy `-RefreshOnly` mode |
+| v2.6 | idea | Azure AD interactive auth (device code flow) |
 | v2.7 | idea | Per-alias query timeout + concurrency limit |
 | v3.0 | idea | Optional auth token between Claude and the broker (for multi-user / shared hosts) |
 

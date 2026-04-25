@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.4.0",
-  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows Task Scheduler / Linux systemd / macOS launchd. Three auth modes: SQL login (default), Windows Authentication (Trusted_Connection), Azure AD service principal. Passwords encrypted with a per-install master.key (AES-128-CBC + HMAC). Auto-migrates v1 DPAPI and v2.0-2.2 keyring aliases.",
+  "version": "2.5.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Task Scheduler / systemd / launchd. Three auth modes: SQL / Windows Auth / Azure AD SPN. v2.5 adds 4 schema-introspection MCP tools (list_objects, get_definition, get_table_schema, get_dependencies) and a connection pool. Plugin /sqlbroker:update slash command refreshes the deployed broker after plugin upgrades.",
   "author": {
     "name": "pumipat"
   },

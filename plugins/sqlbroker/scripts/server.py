@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.4.0"
+SERVER_VERSION = "2.5.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -308,7 +308,78 @@ def get_connection(alias: str, database):
         raise ValueError(f"Unknown auth_mode '{auth_mode}' for alias '{alias}'")
     if db:
         parts.append(f"DATABASE={db}")
-    return pyodbc.connect(";".join(parts), timeout=10), c.get("policy", "readonly")
+    conn = pyodbc.connect(";".join(parts), timeout=10, autocommit=True)
+    return conn, c.get("policy", "readonly")
+
+
+# ---------- Connection pool (v2.5) ----------
+# Reuses pyodbc.Connection objects per (alias, database) tuple. pyodbc has
+# its own ODBC handle pooling on top, but a Python-level pool also avoids
+# rebuilding the connection-string + ODBC manager round-trip per request.
+import threading
+import time
+from contextlib import contextmanager
+from queue import Empty, Queue
+
+POOL_MAX_PER_KEY = int(os.environ.get("MCP_SQL_POOL_MAX", "4"))
+POOL_IDLE_TTL    = int(os.environ.get("MCP_SQL_POOL_TTL", "300"))  # seconds
+_pool: dict = {}
+_pool_lock = threading.Lock()
+
+
+def _pool_key(alias, database):
+    return (alias, database or "")
+
+
+def _checkout(alias, database):
+    """Get a healthy pooled connection or build a new one."""
+    key = _pool_key(alias, database)
+    with _pool_lock:
+        q = _pool.setdefault(key, Queue())
+    while True:
+        try:
+            conn, last_used, policy = q.get_nowait()
+        except Empty:
+            return get_connection(alias, database)
+        # Drop stale or dead connections
+        if time.time() - last_used > POOL_IDLE_TTL:
+            try: conn.close()
+            except Exception: pass
+            continue
+        try:
+            conn.execute("SELECT 1").fetchone()
+            return conn, policy
+        except Exception:
+            try: conn.close()
+            except Exception: pass
+            continue
+
+
+def _checkin(alias, database, conn, policy):
+    """Return a connection to the pool, or close it if pool is full."""
+    key = _pool_key(alias, database)
+    q = _pool.get(key)
+    if q is None or q.qsize() >= POOL_MAX_PER_KEY:
+        try: conn.close()
+        except Exception: pass
+        return
+    q.put((conn, time.time(), policy))
+
+
+@contextmanager
+def pooled_connection(alias, database):
+    """Context manager: yields (conn, policy); returns conn to pool on success."""
+    conn, policy = _checkout(alias, database)
+    success = False
+    try:
+        yield conn, policy
+        success = True
+    finally:
+        if success:
+            _checkin(alias, database, conn, policy)
+        else:
+            try: conn.close()
+            except Exception: pass
 
 
 def _coerce(v):
@@ -342,13 +413,195 @@ def tool_list_aliases(_args):
 
 def tool_list_databases(args):
     alias = args["alias"]
-    conn, _policy = get_connection(alias, None)
-    try:
+    with pooled_connection(alias, None) as (conn, _policy):
         cur = conn.cursor()
         cur.execute("SELECT name FROM sys.databases ORDER BY name")
         return {"databases": [r[0] for r in cur.fetchall()]}
-    finally:
-        conn.close()
+
+
+# ---------- Schema introspection tools (v2.5) ----------
+# These run canned, framework-controlled SQL against sys catalog views.
+# They bypass the policy regex (queries are not user-supplied) but stay
+# read-only — every query is a SELECT from a sys.* view.
+_OBJECT_TYPE_MAP = {
+    # short-name -> sys.objects.type values
+    "proc":      ("P", "PC"),                # SQL stored proc + CLR stored proc
+    "table":     ("U",),                     # user table
+    "view":      ("V",),
+    "function":  ("FN", "IF", "TF", "FS", "FT"),
+    "trigger":   ("TR",),
+    "any":       None,                       # no filter
+}
+
+
+def tool_list_objects(args):
+    alias = args["alias"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        types = _OBJECT_TYPE_MAP.get(args.get("type", "any"), None)
+        pattern = args.get("name_pattern", "%")
+        params = [pattern]
+        sql = (
+            "SELECT s.name + '.' + o.name AS qualified_name, "
+            "       o.type_desc, o.create_date, o.modify_date "
+            "FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id "
+            "WHERE o.name LIKE ? AND o.is_ms_shipped = 0 "
+        )
+        if types:
+            placeholders = ",".join(["?"] * len(types))
+            sql += f"AND o.type IN ({placeholders}) "
+            params.extend(types)
+        sql += "ORDER BY o.name"
+        cur.execute(sql, params)
+        rows = []
+        for r in cur.fetchall():
+            rows.append({
+                "name": r[0],
+                "type": r[1],
+                "created": _coerce(r[2]),
+                "modified": _coerce(r[3]),
+            })
+        return {"objects": rows, "count": len(rows)}
+
+
+def tool_get_definition(args):
+    alias = args["alias"]
+    obj = args["object_name"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        # Resolve object_id, fall back to OBJECT_DEFINITION which handles schema.name
+        cur.execute(
+            "SELECT OBJECT_DEFINITION(OBJECT_ID(?)) AS definition, "
+            "       o.type_desc "
+            "FROM sys.objects o WHERE o.object_id = OBJECT_ID(?)",
+            obj, obj,
+        )
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return {"object_name": obj, "definition": None, "error": "Object not found or no definition (e.g. encrypted)"}
+        return {
+            "object_name": obj,
+            "type": row[1],
+            "definition": row[0],
+        }
+
+
+def tool_get_table_schema(args):
+    alias = args["alias"]
+    table = args["table_name"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        # Columns + types + nullable + PK
+        cur.execute(
+            """
+            SELECT
+                c.name           AS column_name,
+                t.name           AS type_name,
+                c.max_length,
+                c.precision,
+                c.scale,
+                c.is_nullable,
+                c.is_identity,
+                CASE WHEN ic.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_pk,
+                dc.definition    AS default_value
+            FROM sys.columns c
+            JOIN sys.types t      ON t.user_type_id = c.user_type_id
+            LEFT JOIN sys.indexes pk
+                   ON pk.object_id = c.object_id AND pk.is_primary_key = 1
+            LEFT JOIN sys.index_columns ic
+                   ON ic.object_id = c.object_id
+                  AND ic.column_id = c.column_id
+                  AND ic.index_id = pk.index_id
+            LEFT JOIN sys.default_constraints dc
+                   ON dc.parent_object_id = c.object_id
+                  AND dc.parent_column_id = c.column_id
+            WHERE c.object_id = OBJECT_ID(?)
+            ORDER BY c.column_id
+            """,
+            table,
+        )
+        cols = []
+        for r in cur.fetchall():
+            cols.append({
+                "name": r[0],
+                "type": r[1],
+                "max_length": r[2],
+                "precision": r[3],
+                "scale": r[4],
+                "nullable": bool(r[5]),
+                "identity": bool(r[6]),
+                "primary_key": bool(r[7]),
+                "default": r[8],
+            })
+        if not cols:
+            return {"table_name": table, "error": "Table not found"}
+
+        # Indexes (non-PK)
+        cur.execute(
+            """
+            SELECT i.name, i.type_desc, i.is_unique,
+                   STUFF((
+                     SELECT ',' + c.name
+                     FROM sys.index_columns ic
+                     JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                     WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                     ORDER BY ic.key_ordinal
+                     FOR XML PATH('')
+                   ), 1, 1, '') AS columns
+            FROM sys.indexes i
+            WHERE i.object_id = OBJECT_ID(?) AND i.is_primary_key = 0 AND i.type > 0
+            ORDER BY i.name
+            """,
+            table,
+        )
+        indexes = [{"name": r[0], "type": r[1], "unique": bool(r[2]), "columns": r[3]}
+                   for r in cur.fetchall()]
+        return {"table_name": table, "columns": cols, "indexes": indexes}
+
+
+def tool_get_dependencies(args):
+    alias = args["alias"]
+    obj = args["object_name"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        # What this object references (uses)
+        cur.execute(
+            """
+            SELECT DISTINCT
+                CASE WHEN d.referenced_schema_name IS NOT NULL
+                     THEN d.referenced_schema_name + '.' + d.referenced_entity_name
+                     ELSE d.referenced_entity_name END AS name,
+                ro.type_desc
+            FROM sys.sql_expression_dependencies d
+            LEFT JOIN sys.objects ro ON ro.object_id = d.referenced_id
+            WHERE d.referencing_id = OBJECT_ID(?)
+            ORDER BY name
+            """,
+            obj,
+        )
+        uses = [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+
+        # What references this object
+        cur.execute(
+            """
+            SELECT DISTINCT
+                s.name + '.' + o.name AS name,
+                o.type_desc
+            FROM sys.sql_expression_dependencies d
+            JOIN sys.objects o ON o.object_id = d.referencing_id
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            WHERE d.referenced_id = OBJECT_ID(?)
+            ORDER BY name
+            """,
+            obj,
+        )
+        used_by = [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+
+        return {
+            "object_name": obj,
+            "uses": uses,
+            "used_by": used_by,
+        }
 
 
 def tool_execute_sql(args):
@@ -356,12 +609,10 @@ def tool_execute_sql(args):
     database = args.get("database")
     query = args["query"]
     max_rows = int(args.get("max_rows", MAX_ROWS_DEFAULT))
-    conn, policy = get_connection(alias, database)
-    err = check_policy(policy, query)
-    if err:
-        conn.close()
-        raise PermissionError(err)
-    try:
+    with pooled_connection(alias, database) as (conn, policy):
+        err = check_policy(policy, query)
+        if err:
+            raise PermissionError(err)
         cur = conn.cursor()
         cur.execute(query)
         result_sets = []
@@ -383,8 +634,6 @@ def tool_execute_sql(args):
             if not cur.nextset():
                 break
         return {"result_sets": result_sets, "truncated": truncated, "policy": policy}
-    finally:
-        conn.close()
 
 
 TOOLS = {
@@ -440,6 +689,82 @@ TOOLS = {
             },
         },
         "fn": tool_execute_sql,
+    },
+    "list_objects": {
+        "spec": {
+            "name": "list_objects",
+            "description": (
+                "List database objects (procs/tables/views/functions/triggers) "
+                "matching a name pattern. Use this instead of crafting raw "
+                "sys.objects queries."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":        {"type": "string"},
+                    "database":     {"type": "string"},
+                    "name_pattern": {"type": "string", "default": "%",
+                                     "description": "SQL LIKE pattern, e.g. '%[_]approve%'"},
+                    "type":         {"type": "string", "default": "any",
+                                     "enum": ["proc", "table", "view", "function", "trigger", "any"]},
+                },
+                "required": ["alias"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_list_objects,
+    },
+    "get_definition": {
+        "spec": {
+            "name": "get_definition",
+            "description": "Return the source CREATE statement of a proc, view, function, or trigger.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":       {"type": "string"},
+                    "database":    {"type": "string"},
+                    "object_name": {"type": "string",
+                                    "description": "Schema-qualified or bare name, e.g. 'dbo.usp_foo'"},
+                },
+                "required": ["alias", "object_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_definition,
+    },
+    "get_table_schema": {
+        "spec": {
+            "name": "get_table_schema",
+            "description": "Columns (type, nullable, identity, PK, default) and indexes of a table in one call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":      {"type": "string"},
+                    "database":   {"type": "string"},
+                    "table_name": {"type": "string"},
+                },
+                "required": ["alias", "table_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_table_schema,
+    },
+    "get_dependencies": {
+        "spec": {
+            "name": "get_dependencies",
+            "description": "Return both directions: objects this object 'uses' and objects that 'use' it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":       {"type": "string"},
+                    "database":    {"type": "string"},
+                    "object_name": {"type": "string"},
+                },
+                "required": ["alias", "object_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_dependencies,
     },
 }
 

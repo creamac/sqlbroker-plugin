@@ -22,7 +22,8 @@ param(
   [switch]$SkipOdbc,
   [switch]$SkipService,
   [switch]$AutoWire,        # auto-yes on the ~/.claude.json wiring prompt
-  [switch]$SkipMcpWire      # don't touch ~/.claude.json at all
+  [switch]$SkipMcpWire,     # don't touch ~/.claude.json at all
+  [switch]$RefreshOnly      # only copy files + bounce service; skip Python/ODBC/Task setup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +66,38 @@ $proxyAbs = Join-Path $InstallDir 'stdio_proxy.py'
 @echo off
 "$pyAbs" "$proxyAbs" %*
 "@ | Set-Content -Path $wrapperDest -Encoding ASCII
+
+# --- Refresh-only mode: skip Python/ODBC/Task setup, just bounce the
+#     existing service so it picks up the new server.py / manage_conn.py.
+if ($RefreshOnly) {
+  Info '-RefreshOnly: skipping Python, ODBC, and service registration'
+  $existingTask = Get-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+  if (-not $existingTask) {
+    Fail "No existing scheduled task '$ServiceName' to refresh. Run /sqlbroker:install first."
+  }
+  Stop-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+  Start-ScheduledTask -TaskName $ServiceName
+  Start-Sleep -Seconds 3
+  $ok = $false
+  for ($i = 0; $i -lt 5; $i++) {
+    try {
+      $r = Invoke-WebRequest -Uri "http://${BindHost}:${Port}/health" -TimeoutSec 3 -UseBasicParsing
+      if ($r.StatusCode -eq 200) { $ok = $true; break }
+    } catch { Start-Sleep -Seconds 1 }
+  }
+  if ($ok) {
+    # Print broker version
+    try {
+      $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+      $resp = Invoke-RestMethod -Method Post -Uri "http://${BindHost}:${Port}/mcp" -ContentType 'application/json' -Body $body
+      Ok "Broker now running version $($resp.result.serverInfo.version)"
+    } catch { Ok 'Broker is running (version probe failed but health is OK)' }
+  } else {
+    Fail "Health check failed after refresh. Tail $InstallDir\service.err.log"
+  }
+  exit 0
+}
 
 # --- 2) Embedded Python ---
 $pyDir       = Join-Path $InstallDir 'python313'
