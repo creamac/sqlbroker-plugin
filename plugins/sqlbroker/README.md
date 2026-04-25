@@ -1,21 +1,22 @@
 # sqlbroker — Claude Code plugin
 
-**Alias-based MSSQL broker for Claude Code on Windows.** A local NSSM-managed service holds DPAPI-encrypted credentials by alias, so the chat never carries passwords.
+**Alias-based MSSQL broker for Claude Code (Windows / macOS / Linux).** A local service holds passwords encrypted with `master.key` (AES-128-CBC + HMAC) so the chat never carries credentials.
 
 ## What you get
 
 - 🛢️ **Skill** — `sqlbroker` auto-activates on any DB-query intent ("select from X", "เช็ค proc ใน Y")
-- ⚡ **Slash commands** — `/sqlbroker:install`, `/sqlbroker:add`, `/sqlbroker:list`, `/sqlbroker:test`, `/sqlbroker:remove`, `/sqlbroker:status`
-- 🔌 **MCP server registration** — once the local broker is running, Claude calls `execute_sql(alias, query)` directly without ever seeing the password
-- 🛡️ **Three policies** — `readonly` (block all DML/DDL/EXEC), `exec-only` (SELECT + EXEC), `full` (anything)
+- ⚡ **9 slash commands** — `/sqlbroker:install`, `/sqlbroker:update`, `/sqlbroker:add`, `/sqlbroker:list`, `/sqlbroker:test`, `/sqlbroker:rotate`, `/sqlbroker:remove`, `/sqlbroker:status`, `/sqlbroker:diff`
+- 🔌 **14 MCP tools** — schema introspection (list_objects, get_definition, get_table_schema, get_dependencies, find_in_definitions, find_in_columns, get_proc_params, compare_definitions), data (preview_table, execute_sql), runtime (get_server_info, get_active_queries, list_databases, list_aliases)
+- 🛡️ **3 policies** — `readonly` (block all DML/DDL/EXEC), `exec-only` (SELECT + EXEC), `full` (anything)
+- 🔐 **3 auth modes** — SQL login, Windows Authentication (Trusted_Connection), Azure AD service principal
 
 ## Requirements
 
-- Windows 10 / 11 / Server 2016+
-- **Python 3.10+ from python.org** (Microsoft Store Python causes service-as-LocalSystem failures because the interpreter sits behind a per-user reparse point)
-- ODBC Driver 17 or 18 for SQL Server
-- [NSSM](https://nssm.cc/download)
-- Administrator PowerShell for the one-time service install
+- **Windows** 10 / 11 / Server 2016+ — admin shell for service registration
+- **macOS** 12+ — `python3` (`brew install python@3.13`), `sudo`
+- **Linux** — `python3` + `python3-venv`, `sudo`, ODBC Driver 18 (Microsoft repo)
+
+`deploy.ps1` (Windows) auto-downloads embedded Python, ODBC Driver 18, and registers a Scheduled Task. **No NSSM needed.**
 
 ## Install
 
@@ -25,13 +26,13 @@
 /reload-plugins
 ```
 
-Then register the local Windows service (one-time):
+Then register the local service (one-time):
 
 ```
 /sqlbroker:install
 ```
 
-It will print the exact `deploy.ps1` command for you to run in **PowerShell as Administrator** — paths under `~\.claude\plugins\cache\sqlbroker-marketplace\sqlbroker\<version>\scripts\`.
+UAC dialog (Win) or sudo prompt (Unix) → script runs unattended → patches `~/.claude.json` with the MCP wiring entry.
 
 Full quickstart with prerequisites: see the [marketplace README](../../README.md).
 
@@ -41,7 +42,17 @@ Full quickstart with prerequisites: see the [marketplace README](../../README.md
 /sqlbroker:add prod_main
 ```
 
-The command will prompt for host, user, password (hidden), database, and policy. Recommend `readonly` for production.
+Claude collects host / user / db / policy in chat (policy via `AskUserQuestion` form). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat.
+
+## Update later
+
+After pulling a new plugin version, refresh the deployed broker code:
+
+```
+/sqlbroker:update
+```
+
+Skips Python/ODBC reinstall — just copies `server.py` + `manage_conn.py` and bounces the service.
 
 ## Use it
 
@@ -49,37 +60,47 @@ Just ask normally:
 
 > "list_databases ของ prod_main"
 > "เช็คว่ามี proc ตระกูล `_audit_` กี่ตัวใน billing_db บน prod_main"
-> "select count(*) from t_orders where created_at > '2026-01-01' on staging_main"
+> "ดู definition ของ usp_X บน prod_main"
+> "compare definition ของ usp_X ระหว่าง staging_main กับ prod_main"
 
-The skill picks up the intent and routes through the broker.
+The skill picks up the intent and routes to the right MCP tool.
 
 ## Architecture
 
 ```
-Claude Code ──HTTP/JSON-RPC──▶ mcp-sqlbroker (NSSM service, 127.0.0.1:8765)
-                                  ├─ connections.json (DPAPI-encrypted passwords)
-                                  ├─ policy enforcement (readonly|full|exec-only)
-                                  └─ pyodbc → MSSQL
+Claude Code ──stdio JSON-RPC──▶ run_stdio_proxy.[bat|sh] → stdio_proxy.py
+                                          │
+                                          │  HTTP POST /mcp
+                                          ▼
+                              mcp-sqlbroker service (127.0.0.1:8765)
+                                ├─ connections.json (host/user/db/policy/auth_mode + password_enc)
+                                ├─ master.key (32 random bytes, Fernet AES)
+                                ├─ connection pool (per alias+db, max 4, TTL 300s, ping + state reset)
+                                ├─ policy enforcement (string-literal-aware regex)
+                                └─ pyodbc → MSSQL
 ```
+
+Service backend per OS: Task Scheduler (Win) / launchd (Mac) / systemd (Linux). Auto-restart on failure.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `skills/sqlbroker/SKILL.md` | Auto-activating skill with full usage guide |
-| `commands/*.md` | Slash commands |
-| `scripts/server.py` | HTTP MCP server (stdlib + pyodbc + pywin32 only — no fastmcp/pydantic to avoid Smart App Control DLL blocks) |
-| `scripts/manage_conn.py` | CLI for add / list / remove / test aliases |
-| `scripts/deploy.ps1` | Portable installer |
-| `scripts/install-service.ps1` | NSSM-only registration step |
-| `scripts/option-b-rebuild.ps1` | Fix when venv points at Microsoft Store Python |
+| `skills/sqlbroker/SKILL.md` | Auto-activating skill — when to use which of the 14 tools |
+| `commands/*.md` | 9 slash commands |
+| `scripts/server.py` | HTTP MCP broker (stdlib + pyodbc + pycryptodome — no fastmcp/pydantic) |
+| `scripts/manage_conn.py` | CLI: add / list / remove / test / rotate / migrate |
+| `scripts/stdio_proxy.py` | stdio→HTTP shim launched by Claude Code (pure stdlib) |
+| `scripts/run_stdio_proxy.bat` / `.sh` | Windows / Unix launcher for stdio_proxy.py |
+| `scripts/deploy.ps1` | Windows installer (embedded Python + ODBC + Task Scheduler) |
+| `scripts/deploy.sh` | Linux + macOS installer (venv + systemd / launchd) |
 
 ## Security
 
-- Broker binds **127.0.0.1 only** — no token, no network exposure. Trust boundary = the local Windows host.
-- Passwords encrypted with DPAPI **LOCAL_MACHINE scope** (any code-execution on the host can decrypt; protect the host accordingly).
-- Slash commands and the skill use an `MCP_PWD` env-var pattern when adding aliases, so passwords never enter shell history.
-- For production aliases, prefer a SQL login with `db_datareader` only, AND set the broker policy to `readonly`. Defense in depth.
+- Broker binds **127.0.0.1 only** — no token, no network exposure. Trust boundary = the local host.
+- Passwords are AES-128-CBC + HMAC-SHA256 encrypted with `master.key`. Anyone with read access to **both** `master.key` and `connections.json` can decrypt — protect the host accordingly.
+- Slash commands collect passwords via `getpass` in the user's own terminal — never via chat or `--password` CLI args.
+- For production aliases, prefer a SQL login with `db_datareader` only AND broker policy `readonly`. Defense in depth.
 
 ## License
 
