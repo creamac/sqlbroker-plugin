@@ -8,7 +8,9 @@ alias only — host, user, and password never enter the conversation.
 Cross-platform: Windows / macOS / Linux.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.3.1-blue)
+![Version](https://img.shields.io/badge/version-2.7.1-blue)
+![Tools](https://img.shields.io/badge/MCP_tools-14-green)
+![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
 
 ```
 You:   "list databases on prod_main"
@@ -60,7 +62,7 @@ Anything **ODBC Driver 17 or 18** can talk to. Tested:
 | Azure SQL Database / Managed Instance | ✅ Use ODBC 18 with `Encrypt=yes` (override the default) |
 | SQL Server on Linux (2017+) | ✅ Same as Windows server-side |
 
-Auth: **SQL login** (verified). Windows Auth via ODBC `Trusted_Connection=yes` works in principle but the broker keeps a password column — for AAD/Windows-Auth setups, set the alias's `user` to a placeholder and patch `connections.json` `driver`/auth fields directly.
+Auth (v2.4+): **SQL login** (verified, default), **Windows Authentication** (`Trusted_Connection=yes`), **Azure AD service principal** (ODBC 18 + `Authentication=ActiveDirectoryServicePrincipal`). Pick via the `auth_mode` field per-alias — see [Auth modes](#auth-modes-v24).
 
 ### Hosts running the broker
 
@@ -137,10 +139,11 @@ run_stdio_proxy.[bat|sh] → stdio_proxy.py  (pure stdlib shim)
     │  HTTP POST /mcp
     ▼
 mcp-sqlbroker service (127.0.0.1:8765)
-    ├─ connections.json  — host/user/db/policy + password_enc (Fernet AES blob)
+    ├─ connections.json  — host/user/db/policy/auth_mode + password_enc (Fernet AES blob)
     ├─ master.key        — 32 random bytes generated at install
     ├─ policy enforcement — regex strips strings + comments before checking
-    └─ pyodbc → MSSQL
+    ├─ connection pool   — per (alias, db) Queue, max 4, TTL 300s, ping + reset state on checkout
+    └─ pyodbc → MSSQL (auth: SQL login | Windows | AAD-SPN)
 ```
 
 The chat sees alias names only — never hosts, users, or passwords.
@@ -159,13 +162,14 @@ The chat sees alias names only — never hosts, users, or passwords.
 | Command | Purpose |
 |---|---|
 | `/sqlbroker:install` | Install the local service (deploy.ps1 / deploy.sh elevated) |
-| `/sqlbroker:update` | Refresh broker code after a plugin upgrade (skips Python/ODBC/NSSM) |
+| `/sqlbroker:update` | Refresh broker code after a plugin upgrade (skips Python/ODBC) |
 | `/sqlbroker:add <alias>` | Add a new alias — chat for non-secrets, terminal for password |
 | `/sqlbroker:list` | List all aliases (no credentials) |
 | `/sqlbroker:test <alias>` | Run a 4-column identity query against the alias |
 | `/sqlbroker:rotate <alias>` | Rotate password only — host/user/policy untouched |
 | `/sqlbroker:remove <alias>` | Delete alias from config |
-| `/sqlbroker:status` | Service health + alias list (3-step check) |
+| `/sqlbroker:status` | Service health + alias list |
+| `/sqlbroker:diff <a> <b> <obj>` | Diff a proc/view/function across two aliases (or two databases) |
 
 ## MCP tools (auto-routed via the skill — 14 total)
 
@@ -308,8 +312,9 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if
 | `-SkipService` | off | Files only, no service |
 | `-AutoWire` | off | Skip the y/n prompt and write the MCP entry |
 | `-SkipMcpWire` | off | Don't touch `~/.claude.json` at all |
+| `-RefreshOnly` | off | Just copy files + bounce Scheduled Task (skip Python/ODBC) — used by `/sqlbroker:update` |
 
-`deploy.sh` (Linux/macOS) — env vars:
+`deploy.sh` (Linux/macOS) — env vars + flags:
 
 | Var | Default | Notes |
 |---|---|---|
@@ -317,6 +322,12 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if
 | `PORT` | `8765` | |
 | `BIND_HOST` | `127.0.0.1` | |
 | `SERVICE_NAME` | `mcp-sqlbroker` | |
+
+| Flag | Notes |
+|---|---|
+| `--auto-wire` | Skip the y/n prompt and write the MCP entry to `$SUDO_USER`'s `~/.claude.json` |
+| `--skip-mcp-wire` | Don't touch `~/.claude.json` |
+| `--refresh-only` | Bounce systemd unit / launchd plist after copying files (skip venv/deps) |
 
 ---
 
@@ -343,14 +354,14 @@ sqlbroker-marketplace/
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # plugin manifest (v2.3.1)
+    │   └── plugin.json           # plugin manifest (v2.7.1)
     ├── README.md                 # plugin user guide
-    ├── skills/sqlbroker/SKILL.md # auto-activating skill
-    ├── commands/                 # 7 slash commands
-    │   ├── install.md  add.md  list.md  test.md
-    │   ├── rotate.md   remove.md  status.md
+    ├── skills/sqlbroker/SKILL.md # auto-activating skill (with tool-pick cheatsheet)
+    ├── commands/                 # 9 slash commands
+    │   ├── install.md  update.md  add.md  list.md  test.md
+    │   ├── rotate.md   remove.md  status.md  diff.md
     └── scripts/
-        ├── server.py             # HTTP MCP broker
+        ├── server.py             # HTTP MCP broker (14 tools, pool, master.key)
         ├── manage_conn.py        # CLI: add/list/remove/test/rotate/migrate
         ├── stdio_proxy.py        # stdio→HTTP shim (pure stdlib)
         ├── run_stdio_proxy.bat   # Windows launcher
@@ -376,10 +387,11 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | v2.3.1 | ✅ shipped | master.key encryption, Task Scheduler / launchd / systemd, rotate command |
 | v2.4.0 | ✅ shipped | Windows Authentication + Azure AD service principal (`auth_mode` field) |
 | v2.5.0 | ✅ shipped | Schema introspection (4 tools) + connection pool + `/sqlbroker:update` |
-| **v2.6.0** | ✅ shipped | **+4 tools**: `get_server_info` (version detection), `find_in_definitions` (full-text grep), `preview_table` (safe SELECT TOP n), `get_active_queries` (running queries DMV) |
-| v2.7 | idea | Azure AD interactive auth (device code flow) |
-| v2.8 | idea | Per-alias query timeout + concurrency limit |
-| v2.9 | idea | `compare_definitions(alias_a, alias_b, object_name)` — schema diff |
+| v2.6.0 | ✅ shipped | +4 tools: `get_server_info`, `find_in_definitions`, `preview_table`, `get_active_queries` |
+| v2.7.0 | ✅ shipped | +3 tools: `compare_definitions`, `find_in_columns`, `get_proc_params` + `/sqlbroker:diff` slash command |
+| **v2.7.1** | ✅ shipped | **Pre-mortem hotfix**: pool resets session state on checkout, friendly DMV permission errors, `deploy.sh --auto-wire`, `-RefreshOnly` preflight check, tool descriptions trimmed ~50% (verbose guidance moved to skill) |
+| v2.8 | idea | Azure AD interactive auth (device code flow) |
+| v2.9 | idea | Per-alias query timeout + concurrency limit |
 | v3.0 | idea | Optional auth token between Claude and the broker (for multi-user / shared hosts) |
 
 Open issues / PRs welcome at https://github.com/creamac/sqlbroker-plugin/issues
