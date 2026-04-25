@@ -20,7 +20,9 @@ param(
   [string]$ServiceUser     = '',
   [string]$ServicePassword = '',
   [switch]$SkipOdbc,
-  [switch]$SkipService
+  [switch]$SkipService,
+  [switch]$AutoWire,        # auto-yes on the ~/.claude.json wiring prompt
+  [switch]$SkipMcpWire      # don't touch ~/.claude.json at all
 )
 
 $ErrorActionPreference = 'Stop'
@@ -256,12 +258,19 @@ if (-not $ok) {
   Warn "Health check failed. Tail $InstallDir\service.err.log"
 }
 
-# --- 6) MCP wiring (interactive: prompt user before touching ~/.claude.json) ---
+# --- 6) MCP wiring (interactive prompt unless -AutoWire / -SkipMcpWire) ---
 $wrapperBat = Join-Path $InstallDir 'run_stdio_proxy.bat'
 $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
 
 Write-Host ''
-$ans = Read-Host "Add the sqlbroker MCP entry to $claudeJson now? (Y/n)"
+if ($SkipMcpWire) {
+  $ans = 'n'
+} elseif ($AutoWire) {
+  Info "Auto-wiring MCP entry into $claudeJson (--AutoWire passed)"
+  $ans = 'y'
+} else {
+  $ans = Read-Host "Add the sqlbroker MCP entry to $claudeJson now? (Y/n)"
+}
 if ($ans -eq '' -or $ans -match '^(y|yes)$') {
   if (Test-Path $claudeJson) {
     Copy-Item $claudeJson "$claudeJson.bak.$(Get-Date -Format yyyyMMddHHmmss)" -Force
