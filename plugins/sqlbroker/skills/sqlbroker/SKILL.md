@@ -1,20 +1,23 @@
 ---
 name: sqlbroker
-description: Use any time the user asks to query an MSSQL database (SELECT / EXEC / metadata / "เช็ค proc/table") or wants to add, edit, remove, or test a database connection alias on this machine. Routes through the local mcp-sqlbroker NSSM service at http://127.0.0.1:8765/mcp; covers config edits and service management. Activate on any DB-query intent, not just when the user says "use sqlbroker".
+description: Use any time the user asks to query an MSSQL database (SELECT / EXEC / metadata / "เช็ค proc/table") or wants to add, edit, remove, or test a database connection alias on this machine. Routes through the local mcp-sqlbroker service at http://127.0.0.1:8765/mcp; covers config edits and service management. Activate on any DB-query intent, not just when the user says "use sqlbroker".
 ---
 
 # MCP SQL Broker — Usage Guide
 
 ## What it is
 
-A Windows service on this machine at `http://127.0.0.1:8765/mcp` that brokers MSSQL access using **named aliases**, so the conversation never carries credentials. Passwords are encrypted with Windows DPAPI (LOCAL_MACHINE scope) and stored in `connections.json`.
+A local service at `http://127.0.0.1:8765/mcp` that brokers MSSQL access using **named aliases** so the conversation never carries credentials. Passwords are encrypted with a per-install random AES-128-CBC + HMAC key (`master.key`) and stored as `password_enc` in `connections.json`.
 
-- Source / install dir: `D:\util\mcp-sqlbroker\`
-- Service name (NSSM): `mcp-sqlbroker`
-- Runs as: LocalSystem
-- Python interpreter: `C:\Python313\python.exe` (python.org installer; the venv at `D:\util\mcp-sqlbroker\.venv` points to it)
-- Config: `D:\util\mcp-sqlbroker\connections.json`
-- Logs: `D:\util\mcp-sqlbroker\service.log`, `service.out.log`, `service.err.log`
+| | Default |
+|---|---|
+| Source / install dir | Windows: `D:\util\mcp-sqlbroker\` · Linux: `/opt/mcp-sqlbroker/` · macOS: `/opt/mcp-sqlbroker/` |
+| Service backend | Windows: Task Scheduler (`mcp-sqlbroker`) · Linux: systemd · macOS: launchd plist |
+| Runs as | LocalSystem (Win) / root (Unix) by default |
+| Python interpreter | Windows: `<InstallDir>\python313\python.exe` (embedded, downloaded by deploy.ps1) · Unix: `<InstallDir>/.venv/bin/python3` |
+| Config | `<InstallDir>/connections.json` (no plaintext passwords) |
+| Encryption key | `<InstallDir>/master.key` (32 random bytes) |
+| Logs | `<InstallDir>/service.log` (and `service.out.log` / `service.err.log` if redirected) |
 
 ## When to invoke this skill
 
@@ -158,63 +161,82 @@ To rotate the password, easiest is `manage_conn.py add <alias> --force` (re-prom
 
 Default for new aliases: `readonly`. Use `full` only on sandbox / test boxes.
 
-## Service management (NSSM)
+## Service management
 
-Most NSSM commands need an Administrator PowerShell.
+Most management commands need elevation (admin PowerShell on Windows / `sudo` on Unix).
 
+**Windows (Task Scheduler):**
 ```powershell
-D:\util\nssm.exe status   mcp-sqlbroker
-D:\util\nssm.exe start    mcp-sqlbroker
-D:\util\nssm.exe stop     mcp-sqlbroker
-D:\util\nssm.exe restart  mcp-sqlbroker
-D:\util\nssm.exe edit     mcp-sqlbroker        # GUI for env vars / log paths
+Get-ScheduledTask -TaskName mcp-sqlbroker | Format-List State,LastRunTime,LastTaskResult
+Stop-ScheduledTask  -TaskName mcp-sqlbroker
+Start-ScheduledTask -TaskName mcp-sqlbroker
 ```
 
-Health check (no admin needed):
-```powershell
-Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing | Select-Object -Expand Content
+**Linux (systemd):**
+```bash
+sudo systemctl status   mcp-sqlbroker
+sudo systemctl restart  mcp-sqlbroker
+sudo journalctl -u mcp-sqlbroker -n 50
+```
+
+**macOS (launchd):**
+```bash
+sudo launchctl unload /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
+sudo launchctl load   /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
+```
+
+Health check (no admin needed, every OS):
+```bash
+curl -fsS http://127.0.0.1:8765/health
 # expect: {"ok":true,"server":"sqlbroker"}
 ```
 
+Refresh code without re-installing dependencies (use after pulling a new plugin version):
+- Windows: `/sqlbroker:update` (auto-elevates) or `deploy.ps1 -RefreshOnly`
+- Unix: `sudo deploy.sh --refresh-only`
+
 ## Wiring into Claude Code MCP config
 
-Add to `~/.claude.json` or workspace MCP settings:
+`deploy.ps1` / `deploy.sh` patches `~/.claude.json` automatically (with `-AutoWire` / `--auto-wire`). The entry it writes:
+
 ```json
-{
-  "mcpServers": {
-    "sqlbroker": { "url": "http://127.0.0.1:8765/mcp" }
-  }
+"mcpServers": {
+  "sqlbroker": { "command": "<InstallDir>/run_stdio_proxy.[bat|sh]", "args": [] }
 }
 ```
 
-After Claude Code restart, `mcp__sqlbroker__execute_sql` etc. become callable directly.
+After a Claude Code reload, all 14 `mcp__sqlbroker__*` tools become callable.
 
-## Adding the broker to a new Windows host
+## Adding the broker to a new host
 
-The portable installer is `D:\util\mcp-sqlbroker\deploy.ps1`. Requires:
-- Python 3.10+ from **python.org** (Microsoft Store Python causes service-as-LocalSystem failures because the interpreter lives behind a per-user reparse point)
-- ODBC Driver 17 or 18 for SQL Server
-- NSSM (https://nssm.cc/download)
+The installer scripts auto-download / install everything needed:
+
+**Windows** — `deploy.ps1` downloads embedded Python 3.13 + ODBC Driver 18, registers a Scheduled Task running as SYSTEM, optionally patches `~/.claude.json`. Requires admin shell. **No NSSM** — uses Task Scheduler.
+
+**Linux / macOS** — `deploy.sh` uses your system `python3`, builds a venv, installs `pyodbc` + `pycryptodome`, registers a systemd unit (Linux) or launchd plist (macOS). Requires `sudo`. ODBC Driver 18 install hint printed if missing.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Service status `SERVICE_PAUSED` | `D:\util\nssm.exe reset mcp-sqlbroker Throttle` then `start` |
-| Service won't start, no `service.err.log` written | venv probably points at Microsoft Store Python — rebuild venv from `C:\Python313\python.exe` (see `option-b-rebuild.ps1`) |
-| `pyodbc.OperationalError: Invalid value specified for connection string attribute 'Encrypt' (0)` | ODBC Driver 17 doesn't accept `Encrypt=optional`; broker uses `Encrypt=no`. If TLS is required, install ODBC 18 and set the alias's `driver` field. |
-| `pyodbc.OperationalError: Login failed` | Alias password is stale or wrong — re-add with `manage_conn.py add <alias> --force` |
-| Smart App Control blocks `pydantic_core` on a fresh host | Don't add fastmcp / mcp-SDK / pydantic — broker is pure stdlib + pyodbc + pywin32 for exactly this reason |
+| Task `Disabled` / `Ready` (Windows) | Admin: `Start-ScheduledTask -TaskName mcp-sqlbroker` |
+| systemd `inactive` / `failed` | `sudo systemctl restart mcp-sqlbroker`; `journalctl -u mcp-sqlbroker -n 50` |
+| Service won't start, no `service.err.log` written | Run `/sqlbroker:install` again — likely a bad embedded Python install |
+| `master.key did not match (HMAC mismatch)` | Someone replaced master.key. Restore from backup or re-add aliases. |
+| `No encrypted password for alias '<name>'` | Migration didn't complete or alias missing. Run `manage_conn.py migrate` (admin/sudo) or `/sqlbroker:add <alias> --force`. |
+| `permission_denied: VIEW SERVER STATE` (only `get_active_queries`) | Grant `VIEW SERVER STATE` to alias's SQL login or use a privileged alias for that one tool. |
+| `pyodbc.OperationalError: Login failed` | Password rotated. `/sqlbroker:rotate <alias>`. |
+| Smart App Control blocks `pydantic_core` on a fresh host | v2.3+ uses `pycryptodome` (C extension) instead of `cryptography` (Rust). Confirm you're on v2.3+. |
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `server.py` | HTTP MCP server (JSON-RPC over `POST /mcp`) |
-| `manage_conn.py` | CLI: add / list / remove / test aliases |
-| `connections.json` | Alias config — DPAPI-encrypted passwords |
-| `requirements.txt` | `pyodbc`, `pywin32` |
-| `deploy.ps1` | Portable installer for new Windows hosts |
-| `install-service.ps1` | Just the NSSM service registration step (admin) |
-| `option-b-rebuild.ps1` | One-shot fix when venv points at Microsoft Store Python |
-| `fix-service-user.ps1` | Alternative: run service as a named user instead of LocalSystem |
+| `server.py` | HTTP MCP broker — 14 tools, connection pool, master.key encryption, Fernet AES |
+| `manage_conn.py` | CLI: `add` / `list` / `remove` / `test` / `rotate` / `migrate` |
+| `connections.json` | Alias config — `password_enc` (no plaintext) |
+| `master.key` | 32 random bytes for Fernet encryption (one per install) |
+| `requirements.txt` | `pyodbc`, `pycryptodome` |
+| `stdio_proxy.py` + `run_stdio_proxy.{bat,sh}` | stdio→HTTP shim launched by Claude Code |
+| `deploy.ps1` | Windows installer (Task Scheduler, no NSSM) |
+| `deploy.sh` | Linux + macOS installer (systemd / launchd) |
