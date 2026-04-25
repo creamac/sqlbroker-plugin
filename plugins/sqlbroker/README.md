@@ -20,17 +20,20 @@
 ## Install
 
 ```
-/plugin marketplace add pumipat/sqlbroker-plugin
-/plugin install sqlbroker
+/plugin marketplace add creamac/sqlbroker-plugin
+/plugin install sqlbroker@creamac/sqlbroker-plugin
+/reload-plugins
 ```
 
-Then in any session:
+Then register the local Windows service (one-time):
 
 ```
 /sqlbroker:install
 ```
 
-It will print the exact `deploy.ps1` command for you to run in an Administrator PowerShell.
+It will print the exact `deploy.ps1` command for you to run in **PowerShell as Administrator** — paths under `~\.claude\plugins\cache\sqlbroker-marketplace\sqlbroker\<version>\scripts\`.
+
+Full quickstart with prerequisites: see the [marketplace README](../../README.md).
 
 ## Add your first connection
 
@@ -45,8 +48,8 @@ The command will prompt for host, user, password (hidden), database, and policy.
 Just ask normally:
 
 > "list_databases ของ prod_main"
-> "เช็คว่ามี proc ตระกูล `_audit_` กี่ตัวใน thaibma_register"
-> "select count(*) from t_orders where created_at > '2026-01-01' on dev_70_31"
+> "เช็คว่ามี proc ตระกูล `_audit_` กี่ตัวใน billing_db บน prod_main"
+> "select count(*) from t_orders where created_at > '2026-01-01' on staging_main"
 
 The skill picks up the intent and routes through the broker.
 

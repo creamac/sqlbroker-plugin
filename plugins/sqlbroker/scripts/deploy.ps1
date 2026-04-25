@@ -1,53 +1,51 @@
 <#
 .SYNOPSIS
-  Portable installer for MCP SQL Broker on Windows.
+  One-shot installer for MCP SQL Broker on Windows.
 
 .DESCRIPTION
-  - Verifies Python 3.10+ on PATH (or use -PythonExe)
-  - Copies server.py / manage_conn.py / requirements.txt to InstallDir
-  - Creates a venv, installs pyodbc + pywin32 (no fastmcp/pydantic; Smart App Control safe)
-  - Optionally registers a Windows service via NSSM and starts it
-  - Health-checks the HTTP endpoint
+  Self-contained, no prerequisites beyond Windows + admin shell. Will:
+   1. Download Python 3.13 embeddable distribution (no admin Python install needed)
+   2. Bootstrap pip, install pyodbc + pywin32 wheels from PyPI
+   3. Auto-install ODBC Driver 18 for SQL Server if missing
+   4. Auto-download NSSM if missing
+   5. Copy server files, register and start the Windows service
+   6. Health-check the HTTP endpoint
 
 .PARAMETER InstallDir
   Target directory. Default: D:\util\mcp-sqlbroker
 
 .PARAMETER NssmPath
-  Path to nssm.exe. If not provided, common locations are searched.
-
-.PARAMETER PythonExe
-  Override system python. Default: result of `python` on PATH.
+  Path to nssm.exe. If empty, common locations are searched, then auto-downloaded.
 
 .PARAMETER Port
   Port for the HTTP MCP endpoint. Default: 8765
 
 .PARAMETER BindHost
-  Bind address. Default: 127.0.0.1 (localhost only — recommended)
+  Bind address. Default: 127.0.0.1 (localhost only).
 
 .PARAMETER ServiceName
   NSSM service name. Default: mcp-sqlbroker
 
-.PARAMETER ServiceUser
-  Run service as this user (requires -ServicePassword). Default: LocalSystem.
+.PARAMETER SkipOdbc
+  Skip the ODBC Driver 18 auto-install step.
 
 .PARAMETER SkipService
   Install files only; do not register the Windows service.
 
 .EXAMPLE
   .\deploy.ps1
-  .\deploy.ps1 -InstallDir 'C:\apps\mcp-sqlbroker' -NssmPath 'C:\tools\nssm.exe' -Port 9000
-  .\deploy.ps1 -SkipService
+  .\deploy.ps1 -InstallDir 'C:\apps\mcp-sqlbroker' -Port 9000
 #>
 [CmdletBinding()]
 param(
   [string]$InstallDir   = 'D:\util\mcp-sqlbroker',
   [string]$NssmPath     = '',
-  [string]$PythonExe    = '',
   [int]   $Port         = 8765,
   [string]$BindHost     = '127.0.0.1',
   [string]$ServiceName  = 'mcp-sqlbroker',
   [string]$ServiceUser  = '',
   [string]$ServicePassword = '',
+  [switch]$SkipOdbc,
   [switch]$SkipService
 )
 
@@ -58,22 +56,18 @@ function Ok($m)   { Write-Host "[+] $m" -ForegroundColor Green }
 function Warn($m) { Write-Warning $m }
 function Fail($m) { Write-Host "[X] $m" -ForegroundColor Red; exit 1 }
 
-# --- 1) Python ---
-if (-not $PythonExe) {
-  $cmd = Get-Command python -ErrorAction SilentlyContinue
-  if (-not $cmd) { Fail 'python not on PATH. Install Python 3.10+ from python.org or pass -PythonExe.' }
-  $PythonExe = $cmd.Source
+# --- 0) Admin check ---
+$current = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = (New-Object Security.Principal.WindowsPrincipal $current).IsInRole(
+  [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and -not $SkipService) {
+  Fail 'Run this script in an Administrator PowerShell (needed for NSSM service registration and ODBC install).'
 }
-$ver = (& $PythonExe -c "import sys;print('{0}.{1}'.format(*sys.version_info[:2]))").Trim()
-if ([version]$ver -lt [version]'3.10') {
-  Fail "Python $ver too old (need >=3.10)"
-}
-Ok "Python $ver at $PythonExe"
 
-# --- 2) Install dir + copy source files ---
+# --- 1) Install dir + copy source files ---
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$srcFiles = @('server.py', 'manage_conn.py', 'requirements.txt', 'README.md')
+$srcFiles = @('server.py', 'manage_conn.py', 'README.md')
 foreach ($f in $srcFiles) {
   $src = Join-Path $here $f
   if (Test-Path $src) {
@@ -84,31 +78,96 @@ foreach ($f in $srcFiles) {
 }
 Ok "Files copied to $InstallDir"
 
-# --- 3) venv + deps ---
-$venv = Join-Path $InstallDir '.venv'
-$venvPy = Join-Path $venv 'Scripts\python.exe'
-if (-not (Test-Path $venvPy)) {
-  Info "Creating venv at $venv"
-  & $PythonExe -m venv $venv
+# --- 2) Embedded Python ---
+$pyDir       = Join-Path $InstallDir 'python313'
+$pyExe       = Join-Path $pyDir 'python.exe'
+$PythonVersion = '3.13.3'
+$PythonZipUrl  = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
+
+if (-not (Test-Path $pyExe)) {
+  Info "Downloading Python $PythonVersion embedded distribution"
+  $zip = Join-Path $env:TEMP "python-$PythonVersion-embed.zip"
+  try {
+    Invoke-WebRequest -Uri $PythonZipUrl -OutFile $zip -UseBasicParsing
+  } catch { Fail "Python embed download failed: $_" }
+
+  if (Test-Path $pyDir) { Remove-Item -Recurse -Force $pyDir }
+  Expand-Archive -Path $zip -DestinationPath $pyDir -Force
+  Remove-Item -Force $zip
+
+  # Patch python313._pth to enable site-packages
+  $pth = Get-ChildItem $pyDir -Filter 'python*._pth' | Select-Object -First 1
+  if ($pth) {
+    $content = Get-Content $pth.FullName
+    $patched = $content | ForEach-Object {
+      if ($_ -match '^\s*#\s*import site\s*$') { 'import site' } else { $_ }
+    }
+    if ($patched -notcontains 'import site') { $patched += 'import site' }
+    $patched | Set-Content $pth.FullName -Encoding ASCII
+  }
+
+  Info 'Bootstrapping pip'
+  $getPip = Join-Path $env:TEMP 'get-pip.py'
+  Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip -UseBasicParsing
+  & $pyExe $getPip --no-warn-script-location 2>&1 | Out-Null
+  Remove-Item -Force $getPip
+  Ok "Embedded Python ready at $pyExe"
+} else {
+  Ok "Embedded Python already at $pyExe"
 }
-& $venvPy -m pip install --quiet --upgrade pip
-& $venvPy -m pip install --quiet -r (Join-Path $InstallDir 'requirements.txt')
-# Quick smoke test of imports
-& $venvPy -c "import pyodbc, win32crypt; print('deps OK')"
+
+# Install / refresh deps
+Info 'Installing pyodbc, pywin32'
+& $pyExe -m pip install --quiet --no-warn-script-location --upgrade pyodbc pywin32
+& $pyExe -c "import pyodbc, win32crypt; print('deps OK')"
 if ($LASTEXITCODE -ne 0) { Fail 'Dependency import test failed' }
-Ok 'Dependencies installed'
+Ok 'pyodbc and pywin32 ready'
+
+# --- 3) ODBC Driver 18 ---
+if (-not $SkipOdbc) {
+  $drivers = & $pyExe -c "import pyodbc; print('|'.join(pyodbc.drivers()))"
+  if ($drivers -notmatch 'ODBC Driver 1[78] for SQL Server') {
+    Info 'Downloading ODBC Driver 18 for SQL Server'
+    $odbcUrl = 'https://go.microsoft.com/fwlink/?linkid=2280794'   # MSI redirect for ODBC 18.4
+    $odbcMsi = Join-Path $env:TEMP 'msodbcsql18.msi'
+    try {
+      Invoke-WebRequest -Uri $odbcUrl -OutFile $odbcMsi -UseBasicParsing
+      Info 'Installing ODBC Driver 18 silently (admin)'
+      $p = Start-Process msiexec.exe -ArgumentList "/i `"$odbcMsi`" /qn IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait -PassThru
+      Remove-Item -Force $odbcMsi -ErrorAction SilentlyContinue
+      if ($p.ExitCode -eq 0) {
+        Ok 'ODBC Driver 18 installed'
+      } else {
+        Warn "ODBC installer returned exit code $($p.ExitCode); pyodbc connections may fail until a driver is installed."
+      }
+    } catch {
+      Warn "ODBC auto-install failed: $_. Install manually from learn.microsoft.com/sql/connect/odbc"
+    }
+  } else {
+    Ok "ODBC driver detected: $drivers"
+  }
+} else {
+  Info 'Skipping ODBC auto-install per -SkipOdbc'
+}
 
 if ($SkipService) {
   Ok 'Installation finished (service registration skipped per -SkipService).'
-  Write-Host "`nUsage:"
-  Write-Host "  $venvPy `"$InstallDir\manage_conn.py`" add"
-  Write-Host "  $venvPy `"$InstallDir\server.py`""
+  Write-Host ''
+  Write-Host 'Manual usage:'
+  Write-Host "  $pyExe `"$InstallDir\manage_conn.py`" add"
+  Write-Host "  $pyExe `"$InstallDir\server.py`""
   exit 0
 }
 
 # --- 4) NSSM service ---
 if (-not $NssmPath) {
-  $candidates = @('D:\util\nssm.exe', 'C:\util\nssm.exe', 'C:\Program Files\nssm\nssm.exe', 'C:\ProgramData\chocolatey\bin\nssm.exe')
+  $candidates = @(
+    (Join-Path $InstallDir 'nssm.exe'),
+    'D:\util\nssm.exe',
+    'C:\util\nssm.exe',
+    'C:\Program Files\nssm\nssm.exe',
+    'C:\ProgramData\chocolatey\bin\nssm.exe'
+  )
   foreach ($c in $candidates) { if (Test-Path $c) { $NssmPath = $c; break } }
   if (-not $NssmPath) {
     $cmd = Get-Command nssm -ErrorAction SilentlyContinue
@@ -116,15 +175,37 @@ if (-not $NssmPath) {
   }
 }
 if (-not (Test-Path $NssmPath)) {
-  Fail "nssm.exe not found. Pass -NssmPath or install NSSM (https://nssm.cc/download)."
+  $bundled = Join-Path $InstallDir 'nssm.exe'
+  Info 'NSSM not found, downloading nssm-2.24 from nssm.cc'
+  $tmpZip = Join-Path $env:TEMP 'nssm-2.24.zip'
+  $tmpDir = Join-Path $env:TEMP 'nssm-2.24-extract'
+  try {
+    Invoke-WebRequest -Uri 'https://nssm.cc/release/nssm-2.24.zip' -OutFile $tmpZip -UseBasicParsing
+    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+    $arch = if ([Environment]::Is64BitOperatingSystem) { 'win64' } else { 'win32' }
+    $src = Get-ChildItem -Path $tmpDir -Recurse -Filter 'nssm.exe' |
+           Where-Object { $_.FullName -match "\\$arch\\" } |
+           Select-Object -First 1
+    if (-not $src) { Fail 'Could not locate nssm.exe inside the downloaded archive' }
+    Copy-Item $src.FullName $bundled -Force
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+    $NssmPath = $bundled
+    Ok "NSSM bundled at $bundled"
+  } catch {
+    Fail "NSSM download failed: $_. Install manually from https://nssm.cc/download and rerun with -NssmPath."
+  }
 }
 Ok "Using NSSM at $NssmPath"
 
-# Tear down any prior copy of the service
-& $NssmPath stop   $ServiceName 2>$null | Out-Null
-& $NssmPath remove $ServiceName confirm 2>$null | Out-Null
+# Tear down any prior copy of the service (ignore stderr noise)
+$ErrorActionPreference = 'Continue'
+& $NssmPath stop   $ServiceName 2>&1 | Out-Null
+& $NssmPath remove $ServiceName confirm 2>&1 | Out-Null
+$ErrorActionPreference = 'Stop'
 
-& $NssmPath install $ServiceName $venvPy (Join-Path $InstallDir 'server.py') | Out-Null
+& $NssmPath install $ServiceName $pyExe (Join-Path $InstallDir 'server.py') | Out-Null
 & $NssmPath set $ServiceName AppDirectory $InstallDir | Out-Null
 & $NssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
 & $NssmPath set $ServiceName AppEnvironmentExtra `
@@ -145,31 +226,32 @@ if ($ServiceUser) {
   Info "Service will run as $ServiceUser"
 }
 
-& $NssmPath start $ServiceName | Out-Null
+$ErrorActionPreference = 'Continue'
+& $NssmPath reset $ServiceName Throttle 2>&1 | Out-Null
+& $NssmPath start $ServiceName 2>&1 | Out-Null
+$ErrorActionPreference = 'Stop'
+
 Start-Sleep -Seconds 2
-$status = (& $NssmPath status $ServiceName).Trim()
+$status = (& $NssmPath status $ServiceName 2>&1 | Out-String).Trim()
 Ok "Service '$ServiceName' status: $status"
 
 # --- 5) Health check ---
-try {
-  $r = Invoke-WebRequest -Uri "http://${BindHost}:${Port}/health" -TimeoutSec 5 -UseBasicParsing
-  if ($r.StatusCode -eq 200) { Ok "Health check passed: $($r.Content)" }
-} catch {
-  Warn "Health check failed (service may need a moment to start): $_"
-  Warn "Check $InstallDir\service.err.log"
+$ok = $false
+for ($i = 0; $i -lt 5; $i++) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://${BindHost}:${Port}/health" -TimeoutSec 3 -UseBasicParsing
+    if ($r.StatusCode -eq 200) { Ok "Health check passed: $($r.Content)"; $ok = $true; break }
+  } catch { Start-Sleep -Seconds 1 }
+}
+if (-not $ok) {
+  Warn "Health check failed. Tail $InstallDir\service.err.log"
 }
 
 # --- 6) Next steps ---
 Write-Host ''
-Write-Host 'Next steps:' -ForegroundColor Yellow
-Write-Host "  1) Add a connection alias:"
-Write-Host "       cd $InstallDir"
-Write-Host "       .\.venv\Scripts\python.exe manage_conn.py add"
+Write-Host 'Done.' -ForegroundColor Yellow
+Write-Host '  Add a connection from Claude Code:'
+Write-Host '    /sqlbroker:add <alias>'
 Write-Host ''
-Write-Host "  2) Wire up Claude Code MCP config (~\.claude.json or workspace settings):"
-Write-Host '       "mcpServers": {'
-Write-Host "         `"sqlbroker`": { `"url`": `"http://${BindHost}:${Port}/mcp`" }"
-Write-Host '       }'
-Write-Host ''
-Write-Host "  3) Test:"
-Write-Host "       .\.venv\Scripts\python.exe manage_conn.py test <alias>"
+Write-Host '  Or run the CLI directly:'
+Write-Host "    $pyExe `"$InstallDir\manage_conn.py`" add"
