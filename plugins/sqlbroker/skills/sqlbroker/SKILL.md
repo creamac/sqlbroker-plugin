@@ -30,7 +30,7 @@ If the user references a database/server that is *not* yet an alias, ask whether
 
 ## Tool selection (prefer the most specific tool)
 
-When the broker is wired into Claude Code (via `mcpServers.sqlbroker`), 11 MCP tools are exposed. **Pick the most specific one — don't fall back to `execute_sql` if a dedicated tool fits.**
+When the broker is wired into Claude Code (via `mcpServers.sqlbroker`), 14 MCP tools are exposed. **Pick the most specific one — don't fall back to `execute_sql` if a dedicated tool fits.**
 
 **Connection / metadata:**
 - `list_aliases()` — configured aliases (no credentials)
@@ -43,6 +43,9 @@ When the broker is wired into Claude Code (via `mcpServers.sqlbroker`), 11 MCP t
 - `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + non-PK indexes in one call. **Use this** when user asks "what columns does X have?", "schema ของ ...", "indexes on ..."
 - `get_dependencies(alias, object_name, database?)` — both directions: what an object uses + what uses it. **Use this** when user asks "what does proc X read/write?", "ใครเรียก usp_foo", "trace dependencies"
 - `find_in_definitions(alias, search_text, type?, database?)` — full-text grep across all proc/view/function/trigger bodies. **Use this** when user asks "find all procs that touch table X", "which views reference column Y", "หา proc ที่มีคำว่า ..."
+- `find_in_columns(alias, search_text, database?)` — column-name search across all user tables/views. **Use this** for "which tables have a column called email_to?", "หาทุก table ที่มี column ชื่อ status"
+- `get_proc_params(alias, object_name, database?)` — parameter list (name, type, output flag, default) of a proc or function. **Use this** before calling a proc via execute_sql so you know how to bind args.
+- `compare_definitions(alias_a, alias_b, object_name, database_a?, database_b?)` — diff the source code of an object across two aliases (or two databases on the same alias). **Use this** for "is proc X the same on prod and staging?", "what changed in usp_foo between dev and uat?"
 
 **Data / runtime:**
 - `preview_table(alias, table_name, top_n=10, database?)` — safe `SELECT TOP n *` from a table/view. **Use this** for quick peeks; do NOT hand-craft `SELECT TOP n *` via execute_sql — preview_table validates the object exists first and bracket-escapes the name.

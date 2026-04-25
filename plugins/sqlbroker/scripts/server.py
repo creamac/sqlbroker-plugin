@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.6.0"
+SERVER_VERSION = "2.7.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -777,6 +777,146 @@ def tool_get_active_queries(args):
         return {"queries": rows, "count": len(rows)}
 
 
+# ---------- Schema-comparison and detail tools (v2.7) ----------
+def tool_compare_definitions(args):
+    """Diff the source code of an object across two aliases (or two databases)."""
+    alias_a = args["alias_a"]
+    alias_b = args["alias_b"]
+    obj = args["object_name"]
+    def_a = _fetch_definition(alias_a, args.get("database_a"), obj)
+    def_b = _fetch_definition(alias_b, args.get("database_b"), obj)
+    present_a, present_b = def_a is not None, def_b is not None
+    if not (present_a and present_b):
+        return {
+            "object_name": obj,
+            "alias_a": alias_a, "alias_b": alias_b,
+            "definition_a_present": present_a,
+            "definition_b_present": present_b,
+            "error": f"Object missing on {'A' if not present_a else 'B'}",
+        }
+    if def_a == def_b:
+        return {"match": True, "object_name": obj,
+                "alias_a": alias_a, "alias_b": alias_b}
+    import difflib
+    diff = list(difflib.unified_diff(
+        def_a.splitlines(keepends=True),
+        def_b.splitlines(keepends=True),
+        fromfile=alias_a, tofile=alias_b, n=3,
+    ))
+    # Trim very large diffs to avoid blowing the response size
+    full = "".join(diff)
+    truncated = False
+    if len(full) > 50_000:
+        full = full[:50_000] + "\n[... truncated ...]"
+        truncated = True
+    return {
+        "match": False, "object_name": obj,
+        "alias_a": alias_a, "alias_b": alias_b,
+        "diff": full, "truncated": truncated,
+        "size_a": len(def_a), "size_b": len(def_b),
+    }
+
+
+def _fetch_definition(alias, database, obj):
+    with pooled_connection(alias, database) as (conn, _):
+        cur = conn.cursor()
+        cur.execute("SELECT OBJECT_DEFINITION(OBJECT_ID(?))", obj)
+        r = cur.fetchone()
+        return r[0] if r else None
+
+
+def tool_find_in_columns(args):
+    """Find columns by name across all user tables and views."""
+    alias = args["alias"]
+    search = args["search_text"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                s.name + '.' + o.name AS table_name,
+                o.type_desc           AS object_type,
+                c.name                AS column_name,
+                t.name                AS type_name,
+                c.is_nullable,
+                c.is_identity,
+                c.column_id
+            FROM sys.columns c
+            JOIN sys.objects o ON o.object_id = c.object_id
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            JOIN sys.types t   ON t.user_type_id = c.user_type_id
+            WHERE c.name LIKE ?
+              AND o.is_ms_shipped = 0
+              AND o.type IN ('U','V')
+            ORDER BY s.name, o.name, c.column_id
+            """,
+            f"%{search}%",
+        )
+        rows = [{
+            "table": r[0],
+            "object_type": r[1],
+            "column": r[2],
+            "type": r[3],
+            "nullable": bool(r[4]),
+            "identity": bool(r[5]),
+        } for r in cur.fetchall()]
+        return {"search_text": search, "matches": rows, "count": len(rows)}
+
+
+def tool_get_proc_params(args):
+    """Return the parameter list (name, type, output flag, default) of a proc/function."""
+    alias = args["alias"]
+    obj = args["object_name"]
+    with pooled_connection(alias, args.get("database")) as (conn, _):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                p.name              AS param_name,
+                t.name              AS type_name,
+                p.max_length,
+                p.precision,
+                p.scale,
+                p.is_output,
+                p.has_default_value,
+                p.default_value,
+                p.parameter_id
+            FROM sys.parameters p
+            JOIN sys.types t ON t.user_type_id = p.user_type_id
+            WHERE p.object_id = OBJECT_ID(?)
+            ORDER BY p.parameter_id
+            """,
+            obj,
+        )
+        params = []
+        return_type = None
+        for r in cur.fetchall():
+            entry = {
+                "name": r[0] or "(return_value)",
+                "type": r[1],
+                "max_length": r[2],
+                "precision": r[3],
+                "scale": r[4],
+                "is_output": bool(r[5]),
+                "has_default": bool(r[6]),
+                "default_value": r[7],
+                "ordinal": r[8],
+            }
+            if r[8] == 0:
+                # parameter_id 0 = return type for scalar functions
+                return_type = entry
+            else:
+                params.append(entry)
+        if not params and return_type is None:
+            return {"object_name": obj, "error": "Object not found or has no parameters"}
+        return {
+            "object_name": obj,
+            "parameters": params,
+            "parameter_count": len(params),
+            "return_type": return_type,
+        }
+
+
 def tool_execute_sql(args):
     alias = args["alias"]
     database = args.get("database")
@@ -1008,6 +1148,59 @@ TOOLS = {
             },
         },
         "fn": tool_get_active_queries,
+    },
+    "compare_definitions": {
+        "spec": {
+            "name": "compare_definitions",
+            "description": "Diff the source CREATE statement of an object across two aliases (or two databases). Returns 'match: true' or a unified diff. Use this for 'is proc X the same on prod and staging?'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias_a":     {"type": "string"},
+                    "alias_b":     {"type": "string"},
+                    "object_name": {"type": "string"},
+                    "database_a":  {"type": "string"},
+                    "database_b":  {"type": "string"},
+                },
+                "required": ["alias_a", "alias_b", "object_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_compare_definitions,
+    },
+    "find_in_columns": {
+        "spec": {
+            "name": "find_in_columns",
+            "description": "Search column names by LIKE pattern across all user tables and views. Use this for 'which tables have a column called email_to?', 'หาทุก table ที่มี column ชื่อ ...'.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":       {"type": "string"},
+                    "database":    {"type": "string"},
+                    "search_text": {"type": "string", "description": "Substring of the column name."},
+                },
+                "required": ["alias", "search_text"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_find_in_columns,
+    },
+    "get_proc_params": {
+        "spec": {
+            "name": "get_proc_params",
+            "description": "Return the parameter list (name, type, output flag, default value) of a stored procedure or function. Use this when the user asks 'what params does proc X take?' before running it via execute_sql.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "alias":       {"type": "string"},
+                    "database":    {"type": "string"},
+                    "object_name": {"type": "string"},
+                },
+                "required": ["alias", "object_name"],
+                "additionalProperties": False,
+            },
+        },
+        "fn": tool_get_proc_params,
     },
 }
 

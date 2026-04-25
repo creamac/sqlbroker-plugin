@@ -167,7 +167,7 @@ The chat sees alias names only — never hosts, users, or passwords.
 | `/sqlbroker:remove <alias>` | Delete alias from config |
 | `/sqlbroker:status` | Service health + alias list (3-step check) |
 
-## MCP tools (auto-routed via the skill — 11 total)
+## MCP tools (auto-routed via the skill — 14 total)
 
 **Core:**
 - `list_aliases()` — configured aliases, no credentials
@@ -178,12 +178,15 @@ The chat sees alias names only — never hosts, users, or passwords.
 - `get_server_info(alias, database?)` — version (`2008/.../2022`), edition, instance, host, collation, uptime
 - `get_active_queries(alias, top_n?, database?)` — currently-running queries (sys.dm_exec_requests)
 
-**Schema introspection (v2.5):**
+**Schema introspection (v2.5 + v2.7):**
 - `list_objects(alias, name_pattern, type, database?)` — find procs/tables/views by `LIKE` pattern
 - `get_definition(alias, object_name, database?)` — source CREATE statement
 - `get_table_schema(alias, table_name, database?)` — columns + types + nullable + identity + PK + indexes
 - `get_dependencies(alias, object_name, database?)` — both directions: uses + used_by
 - `find_in_definitions(alias, search_text, type?, database?)` — full-text grep across proc/view/function bodies
+- `find_in_columns(alias, search_text, database?)` — column-name search across all user tables/views *(v2.7)*
+- `get_proc_params(alias, object_name, database?)` — parameter list (name, type, output, default) of a proc/function *(v2.7)*
+- `compare_definitions(alias_a, alias_b, object_name, database_a?, database_b?)` — diff source code across two environments *(v2.7)*
 
 **Data (v2.6):**
 - `preview_table(alias, table_name, top_n?, database?)` — safe `SELECT TOP n *`
