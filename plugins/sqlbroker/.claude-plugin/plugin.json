@@ -5,7 +5,7 @@
   "author": {
     "name": "pumipat"
   },
-  "homepage": "https://github.com/pumipat/sqlbroker-plugin",
+  "homepage": "https://github.com/creamac/sqlbroker-plugin",
   "license": "MIT",
   "keywords": [
     "mssql",
@@ -19,7 +19,8 @@
   "platforms": ["win32"],
   "mcpServers": {
     "sqlbroker": {
-      "url": "http://127.0.0.1:8765/mcp"
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_stdio_proxy.bat",
+      "args": []
     }
   }
 }
