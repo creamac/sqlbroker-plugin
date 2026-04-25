@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.2.0",
-  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows uses Task Scheduler + Credential Manager; Linux uses systemd + Secret Service; macOS uses launchd + Keychain. Passwords live in the OS keyring; the conversation never carries them. The deploy script prints the MCP wiring snippet — paste it into ~/.claude.json once.",
+  "version": "2.3.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows Task Scheduler / Linux systemd / macOS launchd. Passwords are encrypted with a per-install random AES-128-CBC + HMAC key (master.key) so the service can decrypt regardless of run-context (SYSTEM / root / user). The conversation never carries credentials. v2.3 auto-migrates v1 (DPAPI) and v2.0-2.2 (keyring) aliases on first start.",
   "author": {
     "name": "pumipat"
   },
@@ -12,7 +12,7 @@
     "sql-server",
     "mcp",
     "broker",
-    "keyring",
+    "encryption",
     "cross-platform"
   ],
   "platforms": ["win32", "darwin", "linux"]

@@ -1,30 +1,40 @@
 """MCP SQL Broker - HTTP MCP server with alias-based MSSQL connection broker.
 
 Speaks JSON-RPC 2.0 over HTTP per the MCP "streamable HTTP" transport.
-Cross-platform: passwords stored in the OS-native keyring
-(Windows Credential Manager / macOS Keychain / Linux Secret Service).
+Passwords are encrypted with a per-install random 256-bit key
+(`master.key` next to connections.json) using AES-128-CBC + HMAC-SHA256
+(Fernet wire format). Works in any process context — service-as-SYSTEM,
+user shell, sudo daemon — as long as the process can read master.key.
+Threat model: equivalent to v1 DPAPI LOCAL_MACHINE — anyone with code
+execution on the host can decrypt; secrets cannot leave the host.
 """
+import base64
 import datetime
 import decimal
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import struct
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
-import keyring
 import pyodbc
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("MCP_SQL_CONFIG", os.path.join(HERE, "connections.json"))
+MASTER_KEY_PATH = os.environ.get("MCP_SQL_MASTER_KEY", os.path.join(HERE, "master.key"))
 HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
-KEYRING_SERVICE = os.environ.get("MCP_SQL_KEYRING_SERVICE", "mcp-sqlbroker")
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.0.0"
+SERVER_VERSION = "2.3.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -38,71 +48,182 @@ logging.basicConfig(
 log = logging.getLogger("sqlbroker")
 
 
-# ---------- Password storage (OS keyring) ----------
+# ---------- Master key + Fernet-format encryption (pycryptodome) ----------
+def _load_master_key() -> bytes:
+    """Read or generate the 32-byte master key."""
+    if not os.path.exists(MASTER_KEY_PATH):
+        key = get_random_bytes(32)
+        # Atomic create
+        tmp = MASTER_KEY_PATH + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(key)
+        os.replace(tmp, MASTER_KEY_PATH)
+    with open(MASTER_KEY_PATH, "rb") as f:
+        key = f.read()
+    if len(key) != 32:
+        raise RuntimeError(
+            f"master.key at {MASTER_KEY_PATH} is {len(key)} bytes; expected 32."
+        )
+    return key
+
+
+_MASTER_KEY: bytes | None = None
+
+
+def _master_key() -> bytes:
+    global _MASTER_KEY
+    if _MASTER_KEY is None:
+        _MASTER_KEY = _load_master_key()
+    return _MASTER_KEY
+
+
+def _encrypt(plaintext: str) -> str:
+    """Fernet-style: 0x80 | timestamp | iv | ct | hmac. base64-url encoded."""
+    key = _master_key()
+    sig_key, enc_key = key[:16], key[16:]
+    iv = get_random_bytes(16)
+    msg = plaintext.encode("utf-8")
+    pad = 16 - (len(msg) % 16)
+    msg_padded = msg + bytes([pad]) * pad
+    ct = AES.new(enc_key, AES.MODE_CBC, iv).encrypt(msg_padded)
+    body = b"\x80" + struct.pack(">Q", int(time.time())) + iv + ct
+    sig = hmac.new(sig_key, body, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(body + sig).decode("ascii")
+
+
+def _decrypt(token: str) -> str:
+    key = _master_key()
+    sig_key, enc_key = key[:16], key[16:]
+    raw = base64.urlsafe_b64decode(token.encode("ascii"))
+    body, sig = raw[:-32], raw[-32:]
+    expect = hmac.new(sig_key, body, hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, expect):
+        raise ValueError("master.key did not match (HMAC mismatch).")
+    iv = body[9:25]
+    ct = body[25:]
+    pt = AES.new(enc_key, AES.MODE_CBC, iv).decrypt(ct)
+    pad = pt[-1]
+    return pt[:-pad].decode("utf-8")
+
+
+# Public storage API used by manage_conn.py
 def store_password(alias: str, password: str) -> None:
-    """Save password into the OS-native keyring keyed by alias."""
-    keyring.set_password(KEYRING_SERVICE, alias, password)
+    """Encrypt and save into connections.json under the alias's password_enc field."""
+    cfg = _read_config_raw()
+    if alias not in cfg.get("connections", {}):
+        cfg.setdefault("connections", {})[alias] = {}
+    cfg["connections"][alias]["password_enc"] = _encrypt(password)
+    _write_config(cfg)
 
 
 def get_password(alias: str) -> str:
-    pwd = keyring.get_password(KEYRING_SERVICE, alias)
-    if pwd is None:
+    cfg = _read_config_raw()
+    c = cfg.get("connections", {}).get(alias)
+    if not c or "password_enc" not in c:
         raise KeyError(
-            f"No password stored for alias '{alias}' in keyring "
-            f"service '{KEYRING_SERVICE}'. Re-add the alias."
+            f"No encrypted password for alias '{alias}'. Re-add via /sqlbroker:add."
         )
-    return pwd
+    return _decrypt(c["password_enc"])
 
 
 def delete_password(alias: str) -> None:
-    try:
-        keyring.delete_password(KEYRING_SERVICE, alias)
-    except keyring.errors.PasswordDeleteError:
-        pass
+    cfg = _read_config_raw()
+    c = cfg.get("connections", {}).get(alias)
+    if c and "password_enc" in c:
+        del c["password_enc"]
+        _write_config(cfg)
 
 
-# ---------- Config ----------
-def _migrate_legacy_dpapi(cfg: dict) -> bool:
-    """One-shot migration of v1 password_dpapi blobs into the OS keyring.
-    Returns True if any aliases were migrated (caller should save the cfg).
-    Silently skips if pywin32 isn't available (non-Windows or fresh install)."""
-    pending = [a for a, c in cfg.get("connections", {}).items() if "password_dpapi" in c]
-    if not pending:
-        return False
-    try:
-        import base64
-        import win32crypt
-    except ImportError:
-        log.warning(
-            "Found legacy DPAPI password fields for aliases %s but pywin32 is not "
-            "installed. Re-add these aliases via /sqlbroker:add or `manage_conn.py add --force`.",
-            pending,
-        )
-        return False
-    migrated = []
-    for alias in pending:
-        c = cfg["connections"][alias]
-        try:
-            blob = base64.b64decode(c["password_dpapi"])
-            _, plain = win32crypt.CryptUnprotectData(blob, None, None, None, 0x04)
-            store_password(alias, plain.decode("utf-8"))
-            del c["password_dpapi"]
-            migrated.append(alias)
-        except Exception as e:
-            log.error("DPAPI migration failed for alias '%s': %s", alias, e)
-    if migrated:
-        log.info("Migrated %d alias(es) from DPAPI to OS keyring: %s", len(migrated), migrated)
-    return bool(migrated)
-
-
-def load_config() -> dict:
+def _read_config_raw() -> dict:
     if not os.path.exists(CONFIG_PATH):
         return {"connections": {}}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    if _migrate_legacy_dpapi(cfg):
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return json.load(f)
+
+
+def _write_config(cfg: dict) -> None:
+    """Atomic write to avoid corruption on crash mid-write."""
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, CONFIG_PATH)
+
+
+# ---------- Config + auto-migration to master.key encryption ----------
+def _migrate_legacy(cfg: dict) -> bool:
+    """One-shot upgrade path:
+       - v1 DPAPI: 'password_dpapi' field → re-encrypt with master.key
+       - v2.0-2.2 keyring: alias has no password field; pull from OS keyring
+         and re-encrypt with master.key (drops the keyring entry).
+       Both paths are idempotent; this runs once per stale alias."""
+    changed = False
+    conns = cfg.get("connections", {})
+
+    # 1) DPAPI legacy (Windows v1 only) — needs pywin32
+    dpapi_pending = [a for a, c in conns.items() if "password_dpapi" in c]
+    if dpapi_pending:
+        try:
+            import win32crypt
+        except ImportError:
+            log.warning(
+                "Found legacy DPAPI password fields for aliases %s but pywin32 is "
+                "not installed. Re-add these aliases via /sqlbroker:add.",
+                dpapi_pending,
+            )
+        else:
+            for alias in dpapi_pending:
+                c = conns[alias]
+                try:
+                    blob = base64.b64decode(c["password_dpapi"])
+                    _, plain = win32crypt.CryptUnprotectData(blob, None, None, None, 0x04)
+                    c["password_enc"] = _encrypt(plain.decode("utf-8"))
+                    del c["password_dpapi"]
+                    log.info("Migrated alias '%s' from DPAPI to master.key", alias)
+                    changed = True
+                except Exception as e:
+                    log.error("DPAPI migration failed for alias '%s': %s", alias, e)
+
+    # 2) Keyring legacy (v2.0-2.2 — passwords lived in OS keyring)
+    keyring_pending = [
+        a for a, c in conns.items()
+        if "password_enc" not in c and "password_dpapi" not in c
+    ]
+    if keyring_pending:
+        try:
+            import keyring as _kr
+        except ImportError:
+            log.warning(
+                "Aliases %s have no password field. Re-add them via /sqlbroker:add.",
+                keyring_pending,
+            )
+        else:
+            kr_service = os.environ.get("MCP_SQL_KEYRING_SERVICE", "mcp-sqlbroker")
+            for alias in keyring_pending:
+                try:
+                    plain = _kr.get_password(kr_service, alias)
+                    if plain is None:
+                        log.warning(
+                            "Alias '%s' has no keyring entry either; needs re-add.",
+                            alias,
+                        )
+                        continue
+                    conns[alias]["password_enc"] = _encrypt(plain)
+                    try:
+                        _kr.delete_password(kr_service, alias)
+                    except Exception:
+                        pass
+                    log.info("Migrated alias '%s' from OS keyring to master.key", alias)
+                    changed = True
+                except Exception as e:
+                    log.error("Keyring migration failed for alias '%s': %s", alias, e)
+
+    return changed
+
+
+def load_config() -> dict:
+    cfg = _read_config_raw()
+    if _migrate_legacy(cfg):
+        _write_config(cfg)
     return cfg
 
 

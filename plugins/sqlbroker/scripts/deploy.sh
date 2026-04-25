@@ -67,9 +67,22 @@ if [[ ! -x "$VENV_PY" ]]; then
   "$PY" -m venv "$VENV"
 fi
 "$VENV_PY" -m pip install --quiet --upgrade pip
-"$VENV_PY" -m pip install --quiet pyodbc keyring
-"$VENV_PY" -c "import pyodbc, keyring; print('deps OK')"
-ok "pyodbc and keyring ready"
+"$VENV_PY" -m pip install --quiet pyodbc pycryptodome
+"$VENV_PY" -c "import pyodbc; from Crypto.Cipher import AES; print('deps OK')"
+ok "pyodbc and pycryptodome ready"
+
+# Detect legacy aliases without password_enc (v2.0-2.2) and add keyring for migration
+CFG="$INSTALL_DIR/connections.json"
+if [[ -f "$CFG" ]] && "$VENV_PY" -c "
+import json,sys
+cfg=json.load(open(sys.argv[1]))
+need = any('password_enc' not in c and 'password_dpapi' not in c
+           for c in cfg.get('connections', {}).values())
+sys.exit(0 if need else 1)
+" "$CFG" 2>/dev/null; then
+  info 'Detected legacy keyring aliases - installing keyring for one-time migration'
+  "$VENV_PY" -m pip install --quiet keyring
+fi
 
 # 4) ODBC driver hint
 DRIVERS="$("$VENV_PY" -c 'import pyodbc; print("|".join(pyodbc.drivers()))' || true)"
@@ -175,9 +188,17 @@ done
 # 7) MCP wiring (interactive consent before touching ~/.claude.json)
 WRAPPER_SH="$INSTALL_DIR/run_stdio_proxy.sh"
 
-# When run under sudo, $HOME may be /root. Prefer the calling user's home.
-TARGET_HOME="${SUDO_USER:+/Users/$SUDO_USER}"
-[[ -z "$TARGET_HOME" ]] && [[ -n "${SUDO_USER:-}" && "$OS" == "Linux" ]] && TARGET_HOME="/home/$SUDO_USER"
+# When run under sudo, $HOME may be /root. Look up the calling user's
+# REAL home directory portably (admin-renamed homes / non-default paths).
+TARGET_HOME=""
+if [[ -n "${SUDO_USER:-}" ]]; then
+  if [[ "$OS" == "Darwin" ]]; then
+    TARGET_HOME="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null \
+      | awk '/^NFSHomeDirectory:/ {print $2}')"
+  else
+    TARGET_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)"
+  fi
+fi
 [[ -z "$TARGET_HOME" ]] && TARGET_HOME="$HOME"
 CLAUDE_JSON="$TARGET_HOME/.claude.json"
 

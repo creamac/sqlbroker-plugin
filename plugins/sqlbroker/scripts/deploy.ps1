@@ -52,6 +52,18 @@ foreach ($f in $srcFiles) {
 }
 Ok "Files copied to $InstallDir"
 
+# Rewrite run_stdio_proxy.bat to point at THIS install's embedded Python
+# (the shipped wrapper hardcodes a few default paths; we want a stable
+# wrapper that always launches the right interpreter regardless of
+# -InstallDir override).
+$wrapperDest = Join-Path $InstallDir 'run_stdio_proxy.bat'
+$pyAbs = Join-Path $InstallDir 'python313\python.exe'
+$proxyAbs = Join-Path $InstallDir 'stdio_proxy.py'
+@"
+@echo off
+"$pyAbs" "$proxyAbs" %*
+"@ | Set-Content -Path $wrapperDest -Encoding ASCII
+
 # --- 2) Embedded Python ---
 $pyDir       = Join-Path $InstallDir 'python313'
 $pyExe       = Join-Path $pyDir 'python.exe'
@@ -91,26 +103,34 @@ if (-not (Test-Path $pyExe)) {
 }
 
 # Install / refresh deps
-Info 'Installing pyodbc, keyring'
-& $pyExe -m pip install --quiet --no-warn-script-location --upgrade pyodbc keyring
-& $pyExe -c "import pyodbc, keyring; print('deps OK')"
+Info 'Installing pyodbc, pycryptodome'
+& $pyExe -m pip install --quiet --no-warn-script-location --upgrade pyodbc pycryptodome
+& $pyExe -c "import pyodbc; from Crypto.Cipher import AES; print('deps OK')"
 if ($LASTEXITCODE -ne 0) { Fail 'Dependency import test failed' }
-Ok 'pyodbc and keyring ready'
+Ok 'pyodbc and pycryptodome ready'
 
-# Detect legacy v1 aliases (password_dpapi) and install pywin32 for one-time
-# migration to OS keyring on first server start.
+# Detect legacy aliases that need migration helpers:
+#   - v1 (password_dpapi)        -> needs pywin32 for one-time migration
+#   - v2.0-2.2 (no password_enc) -> needs keyring to migrate from OS keyring
 $cfgPath = Join-Path $InstallDir 'connections.json'
 if (Test-Path $cfgPath) {
-  $needLegacy = $false
+  $needPywin32 = $false
+  $needKeyring = $false
   try {
     $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
     foreach ($k in $cfg.connections.PSObject.Properties.Name) {
-      if ($cfg.connections.$k.password_dpapi) { $needLegacy = $true; break }
+      $c = $cfg.connections.$k
+      if ($c.password_dpapi) { $needPywin32 = $true }
+      elseif (-not $c.password_enc) { $needKeyring = $true }
     }
   } catch {}
-  if ($needLegacy) {
-    Info 'Detected legacy DPAPI aliases — installing pywin32 for one-time migration'
+  if ($needPywin32) {
+    Info 'Detected legacy DPAPI aliases - installing pywin32 for one-time migration'
     & $pyExe -m pip install --quiet --no-warn-script-location pywin32
+  }
+  if ($needKeyring) {
+    Info 'Detected legacy keyring aliases - installing keyring for one-time migration'
+    & $pyExe -m pip install --quiet --no-warn-script-location keyring
   }
 }
 
@@ -245,21 +265,27 @@ $ans = Read-Host "Add the sqlbroker MCP entry to $claudeJson now? (Y/n)"
 if ($ans -eq '' -or $ans -match '^(y|yes)$') {
   if (Test-Path $claudeJson) {
     Copy-Item $claudeJson "$claudeJson.bak.$(Get-Date -Format yyyyMMddHHmmss)" -Force
-    $raw = Get-Content $claudeJson -Raw -Encoding UTF8
-    $obj = $raw | ConvertFrom-Json
   } else {
-    $obj = [pscustomobject]@{}
+    Set-Content -Path $claudeJson -Value '{}' -Encoding UTF8
   }
-  if (-not ($obj.PSObject.Properties.Name -contains 'mcpServers')) {
-    $obj | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
-  }
-  $entry = [pscustomobject]@{ command = $wrapperBat; args = @() }
-  if ($obj.mcpServers.PSObject.Properties.Name -contains 'sqlbroker') {
-    $obj.mcpServers.sqlbroker = $entry
-  } else {
-    $obj.mcpServers | Add-Member -NotePropertyName sqlbroker -NotePropertyValue $entry -Force
-  }
-  $obj | ConvertTo-Json -Depth 32 | Set-Content -Path $claudeJson -Encoding UTF8
+  # Patch via Python to preserve Unicode + key order. PowerShell 5.1's
+  # ConvertTo-Json escapes non-ASCII and has depth quirks.
+  $env:MCP_CLAUDE_JSON = $claudeJson
+  $env:MCP_WRAPPER     = $wrapperBat
+  $patchSrc = @'
+import json, os
+p = os.environ['MCP_CLAUDE_JSON']
+with open(p, 'r', encoding='utf-8') as f:
+    obj = json.load(f)
+if not isinstance(obj.get('mcpServers'), dict):
+    obj['mcpServers'] = {}
+obj['mcpServers']['sqlbroker'] = {'command': os.environ['MCP_WRAPPER'], 'args': []}
+with open(p, 'w', encoding='utf-8') as f:
+    json.dump(obj, f, ensure_ascii=False, indent=2)
+print("Wrote MCP entry 'sqlbroker' to", p)
+'@
+  $patchSrc | & $pyExe -
+  Remove-Item Env:\MCP_CLAUDE_JSON, Env:\MCP_WRAPPER -ErrorAction SilentlyContinue
   Ok "Wrote MCP entry 'sqlbroker' to $claudeJson (backup saved next to it)"
   Write-Host '  Then in Claude Code: /reload-plugins (or restart it)' -ForegroundColor Yellow
 } else {

@@ -1,2 +1,2 @@
 pyodbc>=5.0
-keyring>=24.0
+pycryptodome>=3.20
