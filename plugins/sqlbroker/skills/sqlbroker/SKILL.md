@@ -56,6 +56,22 @@ When the broker is wired into Claude Code (via `mcpServers.sqlbroker`), 14 MCP t
 
 Tools are auto-prefixed `mcp__plugin_sqlbroker_sqlbroker__` when called.
 
+### Tool-pick cheatsheet (resolve ambiguity)
+
+| User says... | Pick this tool — NOT this |
+|---|---|
+| "show me proc X" / "ดู definition" | ✅ `get_definition` — NOT `find_in_definitions` |
+| "find procs that use table X" / "หา proc ที่ใช้ ..." | ✅ `find_in_definitions` — NOT `get_definition` |
+| "what columns does table X have?" | ✅ `get_table_schema` — NOT `find_in_columns` |
+| "which tables have column called X?" | ✅ `find_in_columns` — NOT `get_table_schema` |
+| "what does proc X read/write?" | ✅ `get_dependencies` — NOT `find_in_definitions` |
+| "list procs matching ..." | ✅ `list_objects` — NOT `find_in_definitions` |
+| "show me top 10 rows of X" | ✅ `preview_table` — NOT `execute_sql` |
+| "what params does proc X take?" | ✅ `get_proc_params` — NOT `get_definition` |
+| "is proc X same on prod and staging?" | ✅ `compare_definitions` — NOT 2× `get_definition` |
+| "what version of SQL Server?" | ✅ `get_server_info` — NOT `execute_sql` |
+| "what's running right now?" | ✅ `get_active_queries` — NOT `execute_sql` |
+
 ## Manual HTTP fallback (when MCP not wired)
 
 ```powershell

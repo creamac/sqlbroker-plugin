@@ -71,6 +71,13 @@ $proxyAbs = Join-Path $InstallDir 'stdio_proxy.py'
 #     existing service so it picks up the new server.py / manage_conn.py.
 if ($RefreshOnly) {
   Info '-RefreshOnly: skipping Python, ODBC, and service registration'
+  # Pre-flight: confirm the embedded Python is still there. If someone
+  # deleted python313/, refresh would silently fail (task starts -> exits)
+  # because the wrapper bat points at a non-existent exe.
+  $expectedPy = Join-Path $InstallDir 'python313\python.exe'
+  if (-not (Test-Path $expectedPy)) {
+    Fail "Embedded Python missing at $expectedPy. -RefreshOnly cannot reinstall it. Re-run /sqlbroker:install (without -RefreshOnly) to bootstrap the interpreter."
+  }
   $existingTask = Get-ScheduledTask -TaskName $ServiceName -ErrorAction SilentlyContinue
   if (-not $existingTask) {
     Fail "No existing scheduled task '$ServiceName' to refresh. Run /sqlbroker:install first."

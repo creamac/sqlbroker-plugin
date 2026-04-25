@@ -20,6 +20,18 @@ BIND_HOST="${BIND_HOST:-127.0.0.1}"
 SERVICE_NAME="${SERVICE_NAME:-mcp-sqlbroker}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Flag parsing — checked at relevant steps below
+AUTO_WIRE=0
+SKIP_MCP_WIRE=0
+REFRESH_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --auto-wire)     AUTO_WIRE=1 ;;
+    --skip-mcp-wire) SKIP_MCP_WIRE=1 ;;
+    --refresh-only)  REFRESH_ONLY=1 ;;
+  esac
+done
+
 ok()   { printf '\033[32m[+]\033[0m %s\n' "$*"; }
 info() { printf '\033[36m[*]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
@@ -60,8 +72,12 @@ chmod +x "$INSTALL_DIR/run_stdio_proxy.sh" 2>/dev/null || true
 ok "Files copied to $INSTALL_DIR"
 
 # Refresh-only mode: skip venv/deps/service registration, just bounce service
-if [[ "${1:-}" == "--refresh-only" ]]; then
+if [[ "$REFRESH_ONLY" -eq 1 ]]; then
   info "--refresh-only: skipping venv/deps/service registration"
+  # Pre-flight: confirm the venv is still present
+  if [[ ! -x "$INSTALL_DIR/.venv/bin/python3" ]]; then
+    fail "venv missing at $INSTALL_DIR/.venv. --refresh-only cannot rebuild it. Re-run deploy.sh without --refresh-only first."
+  fi
   if [[ "$OS" == "Linux" ]]; then
     systemctl restart "$SERVICE_NAME" || fail "systemctl restart failed"
   elif [[ "$OS" == "Darwin" ]]; then
@@ -221,7 +237,14 @@ fi
 CLAUDE_JSON="$TARGET_HOME/.claude.json"
 
 echo
-read -r -p "Add the sqlbroker MCP entry to $CLAUDE_JSON now? (Y/n) " ANS
+if [[ "$SKIP_MCP_WIRE" -eq 1 ]]; then
+  ANS="n"
+elif [[ "$AUTO_WIRE" -eq 1 ]]; then
+  info "--auto-wire: writing MCP entry to $CLAUDE_JSON without prompt"
+  ANS="y"
+else
+  read -r -p "Add the sqlbroker MCP entry to $CLAUDE_JSON now? (Y/n) " ANS
+fi
 if [[ -z "$ANS" || "$ANS" =~ ^[Yy]$ || "$ANS" =~ ^[Yy][Ee][Ss]$ ]]; then
   if [[ -f "$CLAUDE_JSON" ]]; then
     cp "$CLAUDE_JSON" "$CLAUDE_JSON.bak.$(date +%Y%m%d%H%M%S)"

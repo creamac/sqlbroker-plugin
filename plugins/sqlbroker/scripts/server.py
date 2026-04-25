@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.7.0"
+SERVER_VERSION = "2.7.1"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -347,7 +347,13 @@ def _checkout(alias, database):
             except Exception: pass
             continue
         try:
-            conn.execute("SELECT 1").fetchone()
+            # Ping + reset session-level state so a previous user's
+            # SET LOCK_TIMEOUT / SET TRANSACTION ISOLATION LEVEL doesn't leak
+            # into the next request. Reuses the existing connection.
+            cur = conn.cursor()
+            cur.execute("SET LOCK_TIMEOUT 30000; SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT 1")
+            cur.fetchall()
+            cur.close()
             return conn, policy
         except Exception:
             try: conn.close()
@@ -364,6 +370,26 @@ def _checkin(alias, database, conn, policy):
         except Exception: pass
         return
     q.put((conn, time.time(), policy))
+
+
+def invalidate_pool(alias=None):
+    """Close + drop pool entries for an alias (or all if alias=None).
+    Call after removing/rotating an alias (in-process only — manage_conn.py
+    runs out-of-process; that's why we close stale connections at checkout
+    time too)."""
+    with _pool_lock:
+        keys = list(_pool.keys()) if alias is None else [k for k in _pool if k[0] == alias]
+        for k in keys:
+            q = _pool.pop(k, None)
+            if q is None:
+                continue
+            while True:
+                try:
+                    conn, _, _ = q.get_nowait()
+                    try: conn.close()
+                    except Exception: pass
+                except Empty:
+                    break
 
 
 @contextmanager
@@ -747,7 +773,8 @@ def tool_get_active_queries(args):
     top_n = int(args.get("top_n", 50))
     with pooled_connection(alias, args.get("database")) as (conn, _):
         cur = conn.cursor()
-        cur.execute(f"""
+        try:
+            cur.execute(f"""
             SELECT TOP ({top_n})
                 r.session_id,
                 r.blocking_session_id,
@@ -771,6 +798,21 @@ def tool_get_active_queries(args):
               AND r.session_id > 50
             ORDER BY r.total_elapsed_time DESC
         """)
+        except pyodbc.ProgrammingError as e:
+            msg = str(e)
+            if "VIEW SERVER STATE" in msg.upper() or "permission" in msg.lower():
+                return {
+                    "error": "permission_denied",
+                    "message": (
+                        "The alias's SQL login lacks VIEW SERVER STATE — required "
+                        "for sys.dm_exec_requests / sys.dm_exec_sql_text. "
+                        "Grant via:  GRANT VIEW SERVER STATE TO [<login>];  "
+                        "(or use a privileged alias)."
+                    ),
+                    "queries": [],
+                    "count": 0,
+                }
+            raise
         cols = [d[0] for d in cur.description]
         rows = [{cols[i]: _coerce(r[i]) for i in range(len(cols))}
                 for r in cur.fetchall()]
@@ -798,9 +840,17 @@ def tool_compare_definitions(args):
         return {"match": True, "object_name": obj,
                 "alias_a": alias_a, "alias_b": alias_b}
     import difflib
+    # Memory cap: pre-trim each side at LINE_LIMIT before difflib so
+    # multi-MB procs don't blow up the broker. Diff still useful for
+    # reviewing the first few thousand lines of drift.
+    LINE_LIMIT = 5000
+    a_all = def_a.splitlines(keepends=True)
+    b_all = def_b.splitlines(keepends=True)
+    a_lines = a_all[:LINE_LIMIT]
+    b_lines = b_all[:LINE_LIMIT]
+    input_truncated = len(a_all) > LINE_LIMIT or len(b_all) > LINE_LIMIT
     diff = list(difflib.unified_diff(
-        def_a.splitlines(keepends=True),
-        def_b.splitlines(keepends=True),
+        a_lines, b_lines,
         fromfile=alias_a, tofile=alias_b, n=3,
     ))
     # Trim very large diffs to avoid blowing the response size
@@ -813,6 +863,8 @@ def tool_compare_definitions(args):
         "match": False, "object_name": obj,
         "alias_a": alias_a, "alias_b": alias_b,
         "diff": full, "truncated": truncated,
+        "input_truncated": input_truncated,
+        "lines_a": len(a_all), "lines_b": len(b_all),
         "size_a": len(def_a), "size_b": len(def_b),
     }
 
@@ -978,10 +1030,7 @@ TOOLS = {
     "execute_sql": {
         "spec": {
             "name": "execute_sql",
-            "description": (
-                "Execute a SQL query against a configured alias. "
-                "Subject to the alias's policy: readonly | full | exec-only."
-            ),
+            "description": "Run T-SQL on an alias (subject to its policy).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1006,11 +1055,7 @@ TOOLS = {
     "list_objects": {
         "spec": {
             "name": "list_objects",
-            "description": (
-                "List database objects (procs/tables/views/functions/triggers) "
-                "matching a name pattern. Use this instead of crafting raw "
-                "sys.objects queries."
-            ),
+            "description": "Find DB objects (procs/tables/views/functions/triggers) by LIKE pattern.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1082,7 +1127,7 @@ TOOLS = {
     "get_server_info": {
         "spec": {
             "name": "get_server_info",
-            "description": "Server fingerprint: SQL Server version (major name, e.g. 2016/2019), edition, instance, host, collation, uptime. Run this first when you need to pick version-compatible queries.",
+            "description": "SQL Server fingerprint: version (year), edition, instance, host, collation, uptime.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1098,7 +1143,7 @@ TOOLS = {
     "find_in_definitions": {
         "spec": {
             "name": "find_in_definitions",
-            "description": "Full-text grep across proc/view/function/trigger bodies. Use this when the user asks 'find all procs that touch table X' or 'which views reference column Y'.",
+            "description": "Full-text grep across proc/view/function/trigger bodies.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1117,7 +1162,7 @@ TOOLS = {
     "preview_table": {
         "spec": {
             "name": "preview_table",
-            "description": "Safe SELECT TOP n * from a table or view. Use this for quick peeks instead of asking the user to write SELECT.",
+            "description": "Safe SELECT TOP n * from a table or view.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1135,7 +1180,7 @@ TOOLS = {
     "get_active_queries": {
         "spec": {
             "name": "get_active_queries",
-            "description": "Currently-running queries on the server (sys.dm_exec_requests + dm_exec_sql_text). Excludes the broker's own session and system sessions. Use for debugging slow ops or blocking.",
+            "description": "Currently-running queries on the server (excludes broker + system sessions).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1152,7 +1197,7 @@ TOOLS = {
     "compare_definitions": {
         "spec": {
             "name": "compare_definitions",
-            "description": "Diff the source CREATE statement of an object across two aliases (or two databases). Returns 'match: true' or a unified diff. Use this for 'is proc X the same on prod and staging?'.",
+            "description": "Diff CREATE statement of an object across two aliases.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1171,7 +1216,7 @@ TOOLS = {
     "find_in_columns": {
         "spec": {
             "name": "find_in_columns",
-            "description": "Search column names by LIKE pattern across all user tables and views. Use this for 'which tables have a column called email_to?', 'หาทุก table ที่มี column ชื่อ ...'.",
+            "description": "Find columns by name pattern across user tables/views.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1188,7 +1233,7 @@ TOOLS = {
     "get_proc_params": {
         "spec": {
             "name": "get_proc_params",
-            "description": "Return the parameter list (name, type, output flag, default value) of a stored procedure or function. Use this when the user asks 'what params does proc X take?' before running it via execute_sql.",
+            "description": "Parameter list (name, type, output, default) of a proc/function.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
