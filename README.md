@@ -4,33 +4,31 @@ Claude Code plugin marketplace for managing local MSSQL access **without ever pu
 
 ## What's in it
 
-### `sqlbroker` plugin
+### `sqlbroker` plugin (v2.2.0 — cross-platform)
 
-Alias-based MSSQL broker for Windows. A local NSSM-managed service holds DPAPI-encrypted passwords; Claude calls databases by alias only — passwords never enter the chat or any prompt.
+Alias-based MSSQL broker for **Windows / macOS / Linux**. The local service holds passwords in the **OS keyring** (Windows Credential Manager / macOS Keychain / Linux Secret Service); Claude calls databases by alias only — passwords never enter the chat or any prompt.
 
-- 🛢️ **Auto-activating skill** — any DB-query intent (`"select from X"`, `"เช็ค proc ใน Y"`) routes through the broker
+- 🛢️ **Auto-activating skill** — any DB-query intent routes through the broker
 - ⚡ **6 slash commands** — `install`, `add`, `list`, `test`, `remove`, `status`
-- 🔌 **MCP server** registered automatically (stdio→HTTP shim talking to the local broker)
+- 🔌 **stdio MCP shim** that proxies to the local HTTP broker
 - 🛡️ **3 policies** — `readonly` (block DML/DDL/EXEC), `exec-only` (SELECT + EXEC), `full`
+- 🚫 **No NSSM** — uses the OS-native init system (Task Scheduler / launchd / systemd)
 
 → Plugin user guide: [`plugins/sqlbroker/README.md`](plugins/sqlbroker/README.md)
 
 ---
 
-## Quickstart (Windows)
+## Quickstart
 
-### 0. Prerequisites
+### 0. Prerequisites per OS
 
-| | Why |
-|---|---|
-| Windows 10 / 11 / Server 2016+ | DPAPI lives here |
-| Claude Code | host for the plugin — https://claude.com/claude-code |
+| OS | What you need | What gets auto-installed |
+|---|---|---|
+| **Windows 10/11/Server 2016+** | Claude Code, admin shell access | embedded Python, ODBC Driver 18, Task Scheduler entry |
+| **macOS 12+** | Claude Code, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `keyring`, launchd plist. ODBC driver: `brew install msodbcsql18` (manual) |
+| **Linux (Debian/Ubuntu/RHEL/Fedora)** | Claude Code, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `keyring`, systemd unit. ODBC driver: install `msodbcsql18` from Microsoft repo (manual) |
 
-That's it. **You don't need to install Python, ODBC Driver, or NSSM yourself** — `deploy.ps1` downloads the embedded Python, the ODBC driver, and NSSM during install.
-
-### 1. Install the plugin
-
-In a Claude Code session:
+### 1. Install the plugin (every OS)
 
 ```
 /plugin marketplace add creamac/sqlbroker-plugin
@@ -38,38 +36,47 @@ In a Claude Code session:
 /reload-plugins
 ```
 
-### 2. Install the local Windows service
+### 2. Install the local service
 
 ```
 /sqlbroker:install
 ```
 
-That's the whole step. The slash command launches `deploy.ps1` elevated via UAC — click "Yes" on the dialog and a PowerShell window will run the installer. It will:
+The slash command picks the right deploy script for your OS and runs it elevated.
 
-- Download Python 3.13 embeddable into `D:\util\mcp-sqlbroker\python313\` (no system Python install needed)
-- Bootstrap pip, install `pyodbc` + `pywin32`
-- Auto-install **ODBC Driver 18 for SQL Server** if missing
-- Auto-download **NSSM**
-- Register and start the `mcp-sqlbroker` Windows service (LocalSystem, auto-start at boot)
-- Health-check `http://127.0.0.1:8765/health`
+- **Windows** — UAC dialog pops up, click "Yes". Embedded Python + ODBC driver + Scheduled Task all set up automatically.
+- **macOS / Linux** — script prompts for `sudo`. Uses your system `python3`, creates a venv, registers a launchd plist (Mac) or systemd unit (Linux).
 
-To pass options (e.g. different install dir or port), run the script manually instead:
+### 3. Wire it into Claude Code (one-time, manual)
 
-```powershell
-# in PowerShell as Administrator
-cd "$env:USERPROFILE\.claude\plugins\cache\sqlbroker-marketplace\sqlbroker\1.0.0\scripts"
-.\deploy.ps1 -InstallDir 'C:\apps\mcp-sqlbroker' -Port 9000
+The deploy script prints an MCP wiring snippet at the end. Paste it under the `mcpServers` key in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "sqlbroker": {
+      "command": "D:\\util\\mcp-sqlbroker\\run_stdio_proxy.bat",
+      "args": []
+    }
+  }
+}
 ```
 
-### 3. Add your first connection
+(macOS / Linux: `command` will be `/opt/mcp-sqlbroker/run_stdio_proxy.sh`)
+
+Then restart Claude Code (or `/reload-plugins`).
+
+> ℹ️ The plugin manifest doesn't auto-register the MCP server because Claude Code's plugin schema doesn't support per-OS `command`. We chose explicit user-side wiring over a brittle Windows-only default.
+
+### 4. Add your first connection
 
 ```
 /sqlbroker:add prod_main
 ```
 
-The slash command will prompt for **host, user, password (hidden), default_database, policy**. **Recommend `readonly` for production.** Password is encrypted via Windows DPAPI (LOCAL_MACHINE scope) before being written to `connections.json`.
+The slash command prompts for **host, user, password (hidden), default_database, policy**. **Recommend `readonly` for production.** Password is stored in the OS keyring; `connections.json` carries no secret.
 
-### 4. Use it
+### 5. Use it
 
 Just ask Claude things like:
 
@@ -88,15 +95,24 @@ Claude Code
     │
     │  stdio JSON-RPC
     ▼
-run_stdio_proxy.bat → stdio_proxy.py  (pure stdlib shim)
+run_stdio_proxy.[bat|sh] → stdio_proxy.py  (pure stdlib shim)
     │
     │  HTTP POST /mcp
     ▼
-mcp-sqlbroker (NSSM service, 127.0.0.1:8765)
-    ├─ connections.json       (DPAPI-encrypted passwords)
-    ├─ policy enforcement     (readonly | exec-only | full)
+mcp-sqlbroker service (127.0.0.1:8765)
+    ├─ connections.json (no passwords — just metadata + alias names)
+    ├─ OS keyring       (Credential Manager / Keychain / Secret Service)
+    ├─ policy enforcement (readonly | exec-only | full)
     └─ pyodbc → MSSQL
 ```
+
+Service backend per OS:
+
+| OS | Init system | Auto-restart |
+|---|---|---|
+| Windows | Task Scheduler (`mcp-sqlbroker`, runs as SYSTEM at boot) | Yes (RestartCount 99 / 1m interval) |
+| macOS | launchd (`com.creamac.mcp-sqlbroker.plist`) | Yes (`KeepAlive`) |
+| Linux | systemd (`mcp-sqlbroker.service`) | Yes (`Restart=on-failure`) |
 
 The chat sees **alias names only** — never hosts, users, or passwords.
 
@@ -108,17 +124,26 @@ The chat sees **alias names only** — never hosts, users, or passwords.
 /sqlbroker:status
 ```
 
-Healthy output (3 lines):
-```
-[1] NSSM status: SERVICE_RUNNING
-[2] HTTP health: {"ok":true,"server":"sqlbroker"}
-[3] aliases: ...
-```
-
 Or query the broker directly:
+
 ```powershell
 Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing | Select-Object -Expand Content
 ```
+
+```bash
+curl -fsS http://127.0.0.1:8765/health
+```
+
+---
+
+## Migrating from v1.x
+
+v1 stored passwords as `password_dpapi` blobs in `connections.json`. v2 stores them in the OS keyring.
+
+- **Auto-migration:** v2 server migrates legacy entries on first request (Windows only; `deploy.ps1` installs `pywin32` automatically when it detects legacy aliases).
+- **Manual migration:** `python manage_conn.py migrate`.
+
+After migration, `connections.json` no longer carries any password field.
 
 ---
 
@@ -130,21 +155,39 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing | Select-Object 
 /reload-plugins
 ```
 
-Stop and remove the Windows service (admin shell):
+Then stop and remove the service:
+
+**Windows (admin):**
 ```powershell
-D:\util\nssm.exe stop   mcp-sqlbroker
-D:\util\nssm.exe remove mcp-sqlbroker confirm
-Remove-Item -Recurse -Force D:\util\mcp-sqlbroker     # only if you want to wipe everything
+Stop-ScheduledTask     -TaskName mcp-sqlbroker
+Unregister-ScheduledTask -TaskName mcp-sqlbroker -Confirm:$false
+Remove-Item -Recurse -Force D:\util\mcp-sqlbroker     # if you also want files gone
 ```
 
-The encrypted `connections.json` becomes useless once Windows DPAPI keys for that machine are gone, but if you want belt-and-suspenders, delete the file.
+**Linux:**
+```bash
+sudo systemctl stop mcp-sqlbroker
+sudo systemctl disable mcp-sqlbroker
+sudo rm /etc/systemd/system/mcp-sqlbroker.service
+sudo systemctl daemon-reload
+sudo rm -rf /opt/mcp-sqlbroker
+```
+
+**macOS:**
+```bash
+sudo launchctl unload /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
+sudo rm /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
+sudo rm -rf /opt/mcp-sqlbroker
+```
+
+Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json`. Passwords in the OS keyring will remain until you delete them by alias (use the keyring app of your OS).
 
 ---
 
 ## Security notes
 
-- The broker binds **127.0.0.1 only** — no token, no network exposure. Trust boundary = the local Windows host.
-- Passwords are encrypted with DPAPI **LOCAL_MACHINE scope** — anyone with code-execution on the host can decrypt. Protect the host accordingly.
+- Broker binds **127.0.0.1 only** — no token, no network exposure. Trust boundary = the local host.
+- Passwords stored in the OS keyring (DPAPI / Keychain / libsecret). Anyone with code-execution as the same user/system can read them — protect the host.
 - Slash commands and the skill use an `MCP_PWD` env-var pattern when adding aliases, so passwords never enter shell history.
 - For production aliases, use a SQL login with `db_datareader` only AND set the broker policy to `readonly`. Defense in depth.
 

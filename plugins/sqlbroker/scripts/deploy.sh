@@ -172,6 +172,55 @@ for i in 1 2 3 4 5; do
 done
 [[ $ok_count -eq 0 ]] && warn "Health check failed; tail $INSTALL_DIR/service.log"
 
+# 7) MCP wiring (interactive consent before touching ~/.claude.json)
+WRAPPER_SH="$INSTALL_DIR/run_stdio_proxy.sh"
+
+# When run under sudo, $HOME may be /root. Prefer the calling user's home.
+TARGET_HOME="${SUDO_USER:+/Users/$SUDO_USER}"
+[[ -z "$TARGET_HOME" ]] && [[ -n "${SUDO_USER:-}" && "$OS" == "Linux" ]] && TARGET_HOME="/home/$SUDO_USER"
+[[ -z "$TARGET_HOME" ]] && TARGET_HOME="$HOME"
+CLAUDE_JSON="$TARGET_HOME/.claude.json"
+
+echo
+read -r -p "Add the sqlbroker MCP entry to $CLAUDE_JSON now? (Y/n) " ANS
+if [[ -z "$ANS" || "$ANS" =~ ^[Yy]$ || "$ANS" =~ ^[Yy][Ee][Ss]$ ]]; then
+  if [[ -f "$CLAUDE_JSON" ]]; then
+    cp "$CLAUDE_JSON" "$CLAUDE_JSON.bak.$(date +%Y%m%d%H%M%S)"
+  else
+    echo '{}' > "$CLAUDE_JSON"
+  fi
+  # Use the venv python (has json stdlib; doesn't need extra deps)
+  WRAPPER_SH="$WRAPPER_SH" CLAUDE_JSON="$CLAUDE_JSON" "$VENV_PY" - <<'PY'
+import json, os
+p = os.environ["CLAUDE_JSON"]
+wrapper = os.environ["WRAPPER_SH"]
+with open(p, "r", encoding="utf-8") as f:
+    obj = json.load(f)
+if not isinstance(obj.get("mcpServers"), dict):
+    obj["mcpServers"] = {}
+obj["mcpServers"]["sqlbroker"] = {"command": wrapper, "args": []}
+with open(p, "w", encoding="utf-8") as f:
+    json.dump(obj, f, ensure_ascii=False, indent=2)
+print(f"Wrote MCP entry 'sqlbroker' to {p}")
+PY
+  # Restore ownership if we ran as sudo
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    chown "$SUDO_USER" "$CLAUDE_JSON" 2>/dev/null || true
+  fi
+  ok "Run /reload-plugins in Claude Code (or restart it)"
+else
+  cat <<EOF
+
+Skipped. Paste this under "mcpServers" in $CLAUDE_JSON yourself:
+
+  "sqlbroker": {
+    "command": "$WRAPPER_SH",
+    "args": []
+  }
+
+EOF
+fi
+
 cat <<EOF
 
 Done. Add a connection from Claude Code:

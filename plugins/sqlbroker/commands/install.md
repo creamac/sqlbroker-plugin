@@ -1,65 +1,82 @@
 ---
-description: Install the mcp-sqlbroker Windows service (auto-elevated)
+description: Install the mcp-sqlbroker service (Windows / macOS / Linux)
 ---
 
-Install or update the mcp-sqlbroker Windows service on this machine. The
-deploy script downloads embedded Python, ODBC Driver 18 (if missing), and
-NSSM, then registers an auto-starting service. It needs Administrator
-rights — this command launches it elevated via UAC, so the user only has
-to click "Yes" on the UAC dialog.
+Install the mcp-sqlbroker service on this machine. Picks the right deploy
+script for the OS, runs it elevated (UAC on Windows / sudo on Unix), and
+prints the MCP wiring snippet for the user to paste into `~/.claude.json`.
 
 ## Steps
 
-1. Confirm OS is Windows. If not, stop and tell the user this plugin is Windows-only.
+1. Detect OS:
+   - Windows → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.ps1`
+   - macOS / Linux → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh`
 
-2. Locate the deploy script:
+2. **Windows path:**
+
+   Tell the user a UAC dialog will pop up. Then launch the elevated PowerShell window:
 
    ```powershell
    $deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
-   if (-not (Test-Path $deploy)) {
-     # fallback: lookup via the plugin cache path
-     $deploy = "$env:USERPROFILE\.claude\plugins\cache\sqlbroker-marketplace\sqlbroker\1.0.0\scripts\deploy.ps1"
-   }
-   ```
-
-3. Tell the user a UAC dialog will pop up; the elevated PowerShell window will stream the install output and stay open after install (use `-NoExit`) so they can read it.
-
-4. Launch deploy.ps1 elevated:
-
-   ```powershell
    Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-     '-NoExit',
-     '-NoProfile',
-     '-ExecutionPolicy', 'Bypass',
-     '-File', $deploy
+     '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $deploy
    )
    ```
 
-5. After the user reports the elevated window finished (or after 60s), run a health check from the regular shell:
+   The script registers a Scheduled Task named `mcp-sqlbroker` (no NSSM).
 
-   ```powershell
-   try {
-     $r = Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 5
-     "Service health: $($r.Content)"
-   } catch { "Health check failed: $_" }
+3. **macOS / Linux path:**
+
+   Tell the user `sudo` will be required. Suggest they run:
+
+   ```bash
+   sudo "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh"
    ```
 
-6. If healthy, suggest the next step: `/sqlbroker:add <alias>` to register the first DB connection.
+   The script writes either a systemd unit (`/etc/systemd/system/mcp-sqlbroker.service`) or a launchd plist (`/Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist`).
 
-## What deploy.ps1 does (zero prerequisites)
+4. After the user reports the deploy window/output finished, run a health check:
 
-- Downloads Python 3.13 embeddable distribution into `<InstallDir>\python313\` — no system Python needed.
-- Bootstraps pip, installs `pyodbc` and `pywin32` from PyPI.
-- Auto-installs **ODBC Driver 18 for SQL Server** if no compatible driver is detected.
-- Auto-downloads **NSSM** if not on the machine.
-- Copies server files, registers the NSSM service `mcp-sqlbroker` (LocalSystem, auto-start), and starts it.
-- Health-checks `http://127.0.0.1:8765/health`.
+   ```bash
+   curl -fsS http://127.0.0.1:8765/health    # Unix
+   ```
 
-## Optional flags
+   ```powershell
+   Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
+   ```
 
-`-InstallDir`, `-Port`, `-BindHost`, `-NssmPath`, `-SkipOdbc`, `-SkipService`. Pass them to deploy.ps1 in the elevated window if needed.
+5. The deploy output ends with an "Wire it into Claude Code" snippet. Tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`**, then restart Claude Code (or `/reload-plugins` may be enough).
+
+6. Once wired, suggest `/sqlbroker:add <alias>` to register the first DB connection.
+
+## What the deploy script does (zero prerequisites on Windows)
+
+**Windows (`deploy.ps1`):**
+- Downloads Python 3.13 embeddable into `<InstallDir>\python313\` — no system Python install required.
+- Auto-installs ODBC Driver 18 for SQL Server if missing.
+- Registers a Scheduled Task running as SYSTEM at boot, auto-restart on failure.
+
+**Linux (`deploy.sh`):**
+- Uses system `python3` (apt/yum/dnf must have it).
+- Creates a venv, installs `pyodbc` + `keyring`.
+- Hints at ODBC Driver 18 install (Microsoft repo apt/yum) if missing.
+- Writes systemd unit, enables, starts.
+
+**macOS (`deploy.sh`):**
+- Uses system `python3` (Homebrew or python.org).
+- Creates a venv, installs `pyodbc` + `keyring`.
+- Hints at `brew install msodbcsql18` if missing.
+- Writes a LaunchDaemon plist, loads via `launchctl`.
+
+## Optional flags (Windows)
+
+`-InstallDir`, `-Port`, `-BindHost`, `-SkipOdbc`, `-SkipService`. Pass them to `deploy.ps1` in the elevated window.
+
+## Optional env vars (Unix)
+
+`INSTALL_DIR`, `PORT`, `BIND_HOST`, `SERVICE_NAME`. Set them before invoking `sudo deploy.sh`.
 
 ## Notes
 
-- The script does NOT touch existing `connections.json`, so re-running is safe.
-- Passwords in `connections.json` are DPAPI-encrypted (LOCAL_MACHINE scope). Anyone with code-execution on this machine can decrypt — the trust boundary is the Windows host.
+- The deploy scripts do NOT touch existing `connections.json`, so re-running is safe.
+- Passwords are stored in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service) — they are NOT in `connections.json`.

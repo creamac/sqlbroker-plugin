@@ -8,10 +8,10 @@
     {
       "name": "sqlbroker",
       "source": "./plugins/sqlbroker",
-      "description": "Alias-based MSSQL broker for Claude Code on Windows. Stores credentials in the OS keyring (Windows Credential Manager) by alias so the chat never sees passwords. Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:remove, /sqlbroker:status, plus the sqlbroker skill that auto-activates on any DB-query intent. v2 auto-migrates legacy DPAPI aliases to keyring.",
+      "description": "Alias-based MSSQL broker for Claude Code, cross-platform (Windows / macOS / Linux). Stores credentials in the OS keyring; the chat never sees passwords. Service install scripts use Task Scheduler / launchd / systemd (no NSSM). Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:remove, /sqlbroker:status, plus an auto-activating skill on any DB-query intent.",
       "category": "database",
-      "version": "2.0.0",
-      "tags": ["mssql", "sql-server", "windows", "mcp", "broker", "keyring"]
+      "version": "2.2.0",
+      "tags": ["mssql", "sql-server", "mcp", "broker", "keyring", "cross-platform"]
     }
   ]
 }

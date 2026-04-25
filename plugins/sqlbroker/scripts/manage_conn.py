@@ -114,6 +114,39 @@ def cmd_test(args):
         conn.close()
 
 
+def cmd_migrate(_args):
+    """Migrate v1 password_dpapi entries into the OS keyring (Windows only)."""
+    cfg = load()
+    pending = [a for a, c in cfg["connections"].items() if "password_dpapi" in c]
+    if not pending:
+        print("No legacy aliases to migrate.")
+        return
+    try:
+        import base64
+        import win32crypt
+    except ImportError:
+        sys.exit(
+            "pywin32 is required to decrypt v1 DPAPI passwords. "
+            "Install it once: `pip install pywin32`, then rerun migrate."
+        )
+    migrated, failed = [], []
+    for alias in pending:
+        c = cfg["connections"][alias]
+        try:
+            blob = base64.b64decode(c["password_dpapi"])
+            _, plain = win32crypt.CryptUnprotectData(blob, None, None, None, 0x04)
+            from server import store_password
+            store_password(alias, plain.decode("utf-8"))
+            del c["password_dpapi"]
+            migrated.append(alias)
+        except Exception as e:
+            failed.append((alias, str(e)))
+    save(cfg)
+    print(f"Migrated {len(migrated)}/{len(pending)} alias(es): {migrated}")
+    for a, e in failed:
+        print(f"  FAILED: {a}: {e}")
+
+
 def main():
     p = argparse.ArgumentParser(description="MCP SQL Broker connection manager")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -139,6 +172,11 @@ def main():
     t.add_argument("alias")
     t.add_argument("--database")
     t.set_defaults(func=cmd_test)
+
+    sub.add_parser(
+        "migrate",
+        help="Migrate v1 password_dpapi entries into the OS keyring (Windows only)",
+    ).set_defaults(func=cmd_migrate)
 
     args = p.parse_args()
     args.func(args)

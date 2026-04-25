@@ -41,7 +41,7 @@ if (-not $isAdmin -and -not $SkipService) {
 # --- 1) Install dir + copy source files ---
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$srcFiles = @('server.py', 'manage_conn.py', 'README.md')
+$srcFiles = @('server.py', 'manage_conn.py', 'stdio_proxy.py', 'run_stdio_proxy.bat', 'README.md')
 foreach ($f in $srcFiles) {
   $src = Join-Path $here $f
   if (Test-Path $src) {
@@ -236,7 +236,39 @@ if (-not $ok) {
   Warn "Health check failed. Tail $InstallDir\service.err.log"
 }
 
-# --- 6) Next steps ---
+# --- 6) MCP wiring (interactive: prompt user before touching ~/.claude.json) ---
+$wrapperBat = Join-Path $InstallDir 'run_stdio_proxy.bat'
+$claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+
+Write-Host ''
+$ans = Read-Host "Add the sqlbroker MCP entry to $claudeJson now? (Y/n)"
+if ($ans -eq '' -or $ans -match '^(y|yes)$') {
+  if (Test-Path $claudeJson) {
+    Copy-Item $claudeJson "$claudeJson.bak.$(Get-Date -Format yyyyMMddHHmmss)" -Force
+    $raw = Get-Content $claudeJson -Raw -Encoding UTF8
+    $obj = $raw | ConvertFrom-Json
+  } else {
+    $obj = [pscustomobject]@{}
+  }
+  if (-not ($obj.PSObject.Properties.Name -contains 'mcpServers')) {
+    $obj | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+  $entry = [pscustomobject]@{ command = $wrapperBat; args = @() }
+  if ($obj.mcpServers.PSObject.Properties.Name -contains 'sqlbroker') {
+    $obj.mcpServers.sqlbroker = $entry
+  } else {
+    $obj.mcpServers | Add-Member -NotePropertyName sqlbroker -NotePropertyValue $entry -Force
+  }
+  $obj | ConvertTo-Json -Depth 32 | Set-Content -Path $claudeJson -Encoding UTF8
+  Ok "Wrote MCP entry 'sqlbroker' to $claudeJson (backup saved next to it)"
+  Write-Host '  Then in Claude Code: /reload-plugins (or restart it)' -ForegroundColor Yellow
+} else {
+  Write-Host ''
+  Write-Host 'Skipped. Paste this under "mcpServers" in ~\.claude.json yourself:' -ForegroundColor Yellow
+  $entry = [ordered]@{ sqlbroker = [ordered]@{ command = $wrapperBat; args = @() } }
+  Write-Host ($entry | ConvertTo-Json -Depth 5)
+}
+
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Yellow
 Write-Host '  Add a connection from Claude Code:'

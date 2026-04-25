@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "2.1.0",
-  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows uses Task Scheduler + Credential Manager; Linux uses systemd + Secret Service; macOS uses launchd + Keychain. Passwords live in the OS keyring; the conversation never carries them. Auto-migrates v1 DPAPI aliases.",
+  "version": "2.2.0",
+  "description": "Alias-based MSSQL broker for Claude Code. Cross-platform: Windows uses Task Scheduler + Credential Manager; Linux uses systemd + Secret Service; macOS uses launchd + Keychain. Passwords live in the OS keyring; the conversation never carries them. The deploy script prints the MCP wiring snippet — paste it into ~/.claude.json once.",
   "author": {
     "name": "pumipat"
   },
@@ -10,16 +10,10 @@
   "keywords": [
     "mssql",
     "sql-server",
-    "windows",
     "mcp",
     "broker",
-    "keyring"
+    "keyring",
+    "cross-platform"
   ],
-  "platforms": ["win32"],
-  "mcpServers": {
-    "sqlbroker": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_stdio_proxy.bat",
-      "args": []
-    }
-  }
+  "platforms": ["win32", "darwin", "linux"]
 }
