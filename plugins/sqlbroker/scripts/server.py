@@ -237,6 +237,11 @@ _EXEC_ONLY_BLOCK = re.compile(_DML_DDL, re.IGNORECASE)
 
 
 def _strip_sql_comments(q: str) -> str:
+    """Strip comments AND replace string-literal contents with empty so the
+    policy regex doesn't see SQL keywords that happen to appear inside
+    strings (e.g. SELECT '/*' AS x WHERE '*/' = 'UPDATE')."""
+    # Replace 'string contents' (with '' as escaped quote) with empty quotes
+    q = re.sub(r"'(?:[^']|'')*'", "''", q)
     q = re.sub(r"--.*?$", "", q, flags=re.MULTILINE)
     q = re.sub(r"/\*.*?\*/", "", q, flags=re.DOTALL)
     return q

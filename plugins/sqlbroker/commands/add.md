@@ -1,49 +1,43 @@
 ---
-description: Add a new MSSQL connection alias
+description: Add a new MSSQL connection alias (interactive)
 argument-hint: [alias_name]
 ---
 
-Add a new MSSQL connection alias to mcp-sqlbroker. The arguments after the slash command are: $ARGUMENTS.
+Add a new MSSQL connection alias to mcp-sqlbroker. Args: $ARGUMENTS.
 
-## Steps
+## Flow (collect non-secrets in Claude, password in user's terminal)
 
-1. Determine the broker install directory. Default: `D:\util\mcp-sqlbroker`. If the user has installed elsewhere, ask before proceeding.
-2. If the user did not provide an alias name in `$ARGUMENTS`, ask for one (short, snake_case, e.g. `prod_main`, `staging_db`).
-3. Ask the user for:
-   - **host** — e.g. `192.168.1.10\INSTANCE` or `host,1433`
-   - **user** — SQL login name
-   - **password** — DO NOT echo it. Tell the user to type it; we will pass it via `MCP_PWD` env var, not the command line.
-   - **default_database** — optional, can be blank
-   - **policy** — `readonly` | `full` | `exec-only`. Default to `readonly` and recommend it unless the user is operating on a sandbox they explicitly designated as test.
-4. Add the alias using the env-var pattern (avoids password leaking into shell history):
+1. **Alias name** — if `$ARGUMENTS` is empty, ask the user (short, snake_case: `prod_main`, `staging_db`).
+
+2. **Host, user, default_database** — ask the user one at a time in chat (free-text):
+   - host (e.g. `192.168.1.10\INSTANCE` or `host,1433`)
+   - user (SQL login)
+   - default_database (optional — blank to skip)
+
+3. **Policy** — use the `AskUserQuestion` tool with these options:
+   - `readonly (Recommended)` — block DML/DDL/EXEC; SELECT only
+   - `exec-only` — SELECT + EXEC stored procedures; block DML/DDL
+   - `full` — anything (use only for test sandboxes)
+
+4. **Password** — DO NOT collect via chat (lands in transcript). Instead, print the exact command for the user to run in their own terminal — `manage_conn.py add` will prompt for the password securely with `getpass`:
 
    ```powershell
-   $env:MCP_PWD = '<password from user>'
-   $src = @'
-   import os, sys
-   sys.path.insert(0, r"D:\util\mcp-sqlbroker")
-   from manage_conn import load, save
-   from server import encrypt_password
-   cfg = load()
-   cfg["connections"]["<alias>"] = {
-       "host": "<host>",
-       "user": "<user>",
-       "password_dpapi": encrypt_password(os.environ["MCP_PWD"]),
-       "default_database": "<db_or_empty>",
-       "policy": "<policy>",
-       "driver": "ODBC Driver 17 for SQL Server",
-   }
-   save(cfg)
-   '@
-   $src | & "D:\util\mcp-sqlbroker\.venv\Scripts\python.exe" -
-   $env:MCP_PWD = $null
+   D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py add <alias> ^
+       --host '<host>' --user '<user>' --database '<db_or_empty>' --policy <policy> --force
    ```
 
-5. Test with `/sqlbroker:test <alias>` (or run `manage_conn.py test <alias>` directly).
-6. Confirm policy with the user, especially if they picked `full` for a non-test box.
+   ```bash
+   /opt/mcp-sqlbroker/.venv/bin/python3 /opt/mcp-sqlbroker/manage_conn.py add <alias> \
+       --host '<host>' --user '<user>' --database '<db_or_empty>' --policy <policy> --force
+   ```
+
+   The `--force` flag overwrites an existing alias; the script omits `--password`, so it prompts via `getpass.getpass()` (hidden input on the user's terminal).
+
+5. After the user reports it ran successfully, verify with `/sqlbroker:test <alias>`.
 
 ## Safety
 
-- Never put the password as a command-line arg.
-- The broker re-reads `connections.json` on every request — no service restart required.
-- For production DBs, prefer `readonly` AND a SQL login that has `db_datareader` only.
+- Never accept the password as a `--password` CLI arg from the user — it would enter shell history.
+- Never echo the password back in chat.
+- Broker re-reads `connections.json` on every request — no service restart.
+- For production DBs, prefer `readonly` AND a SQL login with `db_datareader` only.

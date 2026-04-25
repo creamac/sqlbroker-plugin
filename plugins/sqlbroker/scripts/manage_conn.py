@@ -114,6 +114,22 @@ def cmd_test(args):
         conn.close()
 
 
+def cmd_rotate(args):
+    """Replace the password for an existing alias without touching other fields."""
+    cfg = load()
+    if args.alias not in cfg["connections"]:
+        sys.exit(f"alias '{args.alias}' not found")
+    pwd = (
+        args.password
+        if args.password is not None
+        else getpass.getpass(f"new password for '{args.alias}': ")
+    )
+    if not pwd:
+        sys.exit("password cannot be empty")
+    store_password(args.alias, pwd)
+    print(f"Rotated password for alias '{args.alias}'")
+
+
 def cmd_migrate(_args):
     """Migrate v1 password_dpapi entries into the OS keyring (Windows only)."""
     cfg = load()
@@ -167,6 +183,11 @@ def main():
     r = sub.add_parser("remove", help="Remove an alias")
     r.add_argument("alias")
     r.set_defaults(func=cmd_remove)
+
+    rot = sub.add_parser("rotate", help="Change password for an existing alias")
+    rot.add_argument("alias")
+    rot.add_argument("--password")
+    rot.set_defaults(func=cmd_rotate)
 
     t = sub.add_parser("test", help="Test connection for an alias")
     t.add_argument("alias")
