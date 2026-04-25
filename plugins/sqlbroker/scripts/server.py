@@ -1,9 +1,9 @@
 """MCP SQL Broker - HTTP MCP server with alias-based MSSQL connection broker.
 
 Speaks JSON-RPC 2.0 over HTTP per the MCP "streamable HTTP" transport.
-No FastMCP / pydantic dependency (avoids Smart App Control DLL blocks).
+Cross-platform: passwords stored in the OS-native keyring
+(Windows Credential Manager / macOS Keychain / Linux Secret Service).
 """
-import base64
 import datetime
 import decimal
 import json
@@ -14,16 +14,17 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
+import keyring
 import pyodbc
-import win32crypt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("MCP_SQL_CONFIG", os.path.join(HERE, "connections.json"))
 HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
+KEYRING_SERVICE = os.environ.get("MCP_SQL_KEYRING_SERVICE", "mcp-sqlbroker")
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "2.0.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -37,36 +38,72 @@ logging.basicConfig(
 log = logging.getLogger("sqlbroker")
 
 
-# ---------- DPAPI ----------
-CRYPTPROTECT_LOCAL_MACHINE = 0x04
+# ---------- Password storage (OS keyring) ----------
+def store_password(alias: str, password: str) -> None:
+    """Save password into the OS-native keyring keyed by alias."""
+    keyring.set_password(KEYRING_SERVICE, alias, password)
 
 
-def encrypt_password(plaintext: str) -> str:
-    blob = win32crypt.CryptProtectData(
-        plaintext.encode("utf-8"),
-        "mcp-sqlbroker",
-        None,
-        None,
-        None,
-        CRYPTPROTECT_LOCAL_MACHINE,
-    )
-    return base64.b64encode(blob).decode("ascii")
+def get_password(alias: str) -> str:
+    pwd = keyring.get_password(KEYRING_SERVICE, alias)
+    if pwd is None:
+        raise KeyError(
+            f"No password stored for alias '{alias}' in keyring "
+            f"service '{KEYRING_SERVICE}'. Re-add the alias."
+        )
+    return pwd
 
 
-def decrypt_password(b64: str) -> str:
-    blob = base64.b64decode(b64)
-    _, plaintext = win32crypt.CryptUnprotectData(
-        blob, None, None, None, CRYPTPROTECT_LOCAL_MACHINE
-    )
-    return plaintext.decode("utf-8")
+def delete_password(alias: str) -> None:
+    try:
+        keyring.delete_password(KEYRING_SERVICE, alias)
+    except keyring.errors.PasswordDeleteError:
+        pass
 
 
 # ---------- Config ----------
+def _migrate_legacy_dpapi(cfg: dict) -> bool:
+    """One-shot migration of v1 password_dpapi blobs into the OS keyring.
+    Returns True if any aliases were migrated (caller should save the cfg).
+    Silently skips if pywin32 isn't available (non-Windows or fresh install)."""
+    pending = [a for a, c in cfg.get("connections", {}).items() if "password_dpapi" in c]
+    if not pending:
+        return False
+    try:
+        import base64
+        import win32crypt
+    except ImportError:
+        log.warning(
+            "Found legacy DPAPI password fields for aliases %s but pywin32 is not "
+            "installed. Re-add these aliases via /sqlbroker:add or `manage_conn.py add --force`.",
+            pending,
+        )
+        return False
+    migrated = []
+    for alias in pending:
+        c = cfg["connections"][alias]
+        try:
+            blob = base64.b64decode(c["password_dpapi"])
+            _, plain = win32crypt.CryptUnprotectData(blob, None, None, None, 0x04)
+            store_password(alias, plain.decode("utf-8"))
+            del c["password_dpapi"]
+            migrated.append(alias)
+        except Exception as e:
+            log.error("DPAPI migration failed for alias '%s': %s", alias, e)
+    if migrated:
+        log.info("Migrated %d alias(es) from DPAPI to OS keyring: %s", len(migrated), migrated)
+    return bool(migrated)
+
+
 def load_config() -> dict:
     if not os.path.exists(CONFIG_PATH):
         return {"connections": {}}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    if _migrate_legacy_dpapi(cfg):
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return cfg
 
 
 # ---------- Policy ----------
@@ -110,7 +147,7 @@ def get_connection(alias: str, database):
             f"Unknown alias '{alias}'. Available: {sorted(conns.keys())}"
         )
     c = conns[alias]
-    pwd = decrypt_password(c["password_dpapi"])
+    pwd = get_password(alias)
     driver = c.get("driver", "ODBC Driver 17 for SQL Server")
     db = database or c.get("default_database", "")
     parts = [

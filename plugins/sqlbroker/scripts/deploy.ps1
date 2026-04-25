@@ -117,11 +117,28 @@ if (-not (Test-Path $pyExe)) {
 }
 
 # Install / refresh deps
-Info 'Installing pyodbc, pywin32'
-& $pyExe -m pip install --quiet --no-warn-script-location --upgrade pyodbc pywin32
-& $pyExe -c "import pyodbc, win32crypt; print('deps OK')"
+Info 'Installing pyodbc, keyring'
+& $pyExe -m pip install --quiet --no-warn-script-location --upgrade pyodbc keyring
+& $pyExe -c "import pyodbc, keyring; print('deps OK')"
 if ($LASTEXITCODE -ne 0) { Fail 'Dependency import test failed' }
-Ok 'pyodbc and pywin32 ready'
+Ok 'pyodbc and keyring ready'
+
+# Detect legacy v1 aliases (password_dpapi) and install pywin32 for one-time
+# migration to OS keyring on first server start.
+$cfgPath = Join-Path $InstallDir 'connections.json'
+if (Test-Path $cfgPath) {
+  $needLegacy = $false
+  try {
+    $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+    foreach ($k in $cfg.connections.PSObject.Properties.Name) {
+      if ($cfg.connections.$k.password_dpapi) { $needLegacy = $true; break }
+    }
+  } catch {}
+  if ($needLegacy) {
+    Info 'Detected legacy DPAPI aliases — installing pywin32 for one-time migration'
+    & $pyExe -m pip install --quiet --no-warn-script-location pywin32
+  }
+}
 
 # --- 3) ODBC Driver 18 ---
 if (-not $SkipOdbc) {

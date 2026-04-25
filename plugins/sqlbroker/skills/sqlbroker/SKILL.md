@@ -21,7 +21,7 @@ A Windows service on this machine at `http://127.0.0.1:8765/mcp` that brokers MS
 Trigger any time the user wants to interact with an MSSQL database that is (or should be) configured as an alias on this machine. Examples:
 
 - "query DB X", "select from Y", "ดู proc ใน DB Z", "เช็ค table ..."
-- "list databases on test_itdeploy"
+- "list databases on prod_main"
 - "หาว่ามี usp ตระกูล _approve กี่ตัว"
 - "test connection to <alias>"
 - "เพิ่ม alias ใหม่", "ลบ alias", "เปลี่ยน policy เป็น readonly"

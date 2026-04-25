@@ -8,7 +8,7 @@ Add a new MSSQL connection alias to mcp-sqlbroker. The arguments after the slash
 ## Steps
 
 1. Determine the broker install directory. Default: `D:\util\mcp-sqlbroker`. If the user has installed elsewhere, ask before proceeding.
-2. If the user did not provide an alias name in `$ARGUMENTS`, ask for one (short, snake_case, e.g. `prod_main`, `dev_70_31`).
+2. If the user did not provide an alias name in `$ARGUMENTS`, ask for one (short, snake_case, e.g. `prod_main`, `staging_db`).
 3. Ask the user for:
    - **host** — e.g. `192.168.1.10\INSTANCE` or `host,1433`
    - **user** — SQL login name

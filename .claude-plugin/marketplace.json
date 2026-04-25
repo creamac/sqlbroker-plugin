@@ -8,10 +8,10 @@
     {
       "name": "sqlbroker",
       "source": "./plugins/sqlbroker",
-      "description": "Alias-based MSSQL broker for Claude Code on Windows. Stores DPAPI-encrypted credentials locally so the chat never sees passwords. Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:remove, /sqlbroker:status, plus the sqlbroker skill that auto-activates on any DB-query intent.",
+      "description": "Alias-based MSSQL broker for Claude Code on Windows. Stores credentials in the OS keyring (Windows Credential Manager) by alias so the chat never sees passwords. Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:remove, /sqlbroker:status, plus the sqlbroker skill that auto-activates on any DB-query intent. v2 auto-migrates legacy DPAPI aliases to keyring.",
       "category": "database",
-      "version": "1.0.0",
-      "tags": ["mssql", "sql-server", "windows", "mcp", "broker"]
+      "version": "2.0.0",
+      "tags": ["mssql", "sql-server", "windows", "mcp", "broker", "keyring"]
     }
   ]
 }

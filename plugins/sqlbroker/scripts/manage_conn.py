@@ -6,9 +6,9 @@ Usage:
   python manage_conn.py remove <alias>
   python manage_conn.py test <alias> [--database DB]
 
-Passwords are encrypted with Windows DPAPI (LOCAL_MACHINE scope) before
-being written to connections.json. Anyone with access to the file alone
-cannot recover the password without local-machine DPAPI keys.
+Passwords are stored in the OS-native keyring (Windows Credential Manager,
+macOS Keychain, Linux Secret Service) — they never appear in
+connections.json or in this process's command line.
 """
 import argparse
 import getpass
@@ -16,7 +16,12 @@ import json
 import os
 import sys
 
-from server import CONFIG_PATH, encrypt_password, get_connection
+from server import (
+    CONFIG_PATH,
+    delete_password,
+    get_connection,
+    store_password,
+)
 
 
 def load():
@@ -57,16 +62,17 @@ def cmd_add(args):
         sys.exit(f"Invalid policy: {policy}")
     driver = args.driver or "ODBC Driver 17 for SQL Server"
 
+    store_password(alias, pwd)
     cfg["connections"][alias] = {
         "host": host,
         "user": user,
-        "password_dpapi": encrypt_password(pwd),
         "default_database": db,
         "policy": policy,
         "driver": driver,
     }
     save(cfg)
-    print(f"Added alias '{alias}' (host={host}, user={user}, policy={policy})")
+    print(f"Added alias '{alias}' (host={host}, user={user}, policy={policy}); "
+          f"password saved to OS keyring")
 
 
 def cmd_list(_args):
@@ -89,7 +95,8 @@ def cmd_remove(args):
         sys.exit(f"alias '{args.alias}' not found")
     del cfg["connections"][args.alias]
     save(cfg)
-    print(f"Removed alias '{args.alias}'")
+    delete_password(args.alias)
+    print(f"Removed alias '{args.alias}' (config + keyring entry)")
 
 
 def cmd_test(args):

@@ -1,7 +1,7 @@
 {
   "name": "sqlbroker",
-  "version": "1.0.0",
-  "description": "Alias-based MSSQL broker for Claude Code on Windows. Run a local NSSM-managed broker that holds DPAPI-encrypted credentials by alias; the conversation never carries passwords.",
+  "version": "2.0.0",
+  "description": "Alias-based MSSQL broker for Claude Code on Windows. A local broker holds passwords in the OS keyring (Windows Credential Manager) by alias; the conversation never carries passwords. v2 auto-migrates legacy DPAPI aliases.",
   "author": {
     "name": "pumipat"
   },
@@ -13,8 +13,7 @@
     "windows",
     "mcp",
     "broker",
-    "dpapi",
-    "nssm"
+    "keyring"
   ],
   "platforms": ["win32"],
   "mcpServers": {
