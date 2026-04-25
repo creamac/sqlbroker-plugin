@@ -1,0 +1,20 @@
+# Never commit live broker config / runtime artifacts
+connections.json
+*.log
+service.out.log
+service.err.log
+service.log
+
+# venvs
+.venv/
+venv/
+
+# Python cruft
+__pycache__/
+*.pyc
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

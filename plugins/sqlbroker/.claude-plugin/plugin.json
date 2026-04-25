@@ -1,0 +1,25 @@
+{
+  "name": "sqlbroker",
+  "version": "1.0.0",
+  "description": "Alias-based MSSQL broker for Claude Code on Windows. Run a local NSSM-managed broker that holds DPAPI-encrypted credentials by alias; the conversation never carries passwords.",
+  "author": {
+    "name": "pumipat"
+  },
+  "homepage": "https://github.com/pumipat/sqlbroker-plugin",
+  "license": "MIT",
+  "keywords": [
+    "mssql",
+    "sql-server",
+    "windows",
+    "mcp",
+    "broker",
+    "dpapi",
+    "nssm"
+  ],
+  "platforms": ["win32"],
+  "mcpServers": {
+    "sqlbroker": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}

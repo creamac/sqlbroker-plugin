@@ -1,0 +1,17 @@
+{
+  "name": "sqlbroker-marketplace",
+  "owner": {
+    "name": "pumipat"
+  },
+  "description": "Plugins for managing local MSSQL access from Claude Code",
+  "plugins": [
+    {
+      "name": "sqlbroker",
+      "source": "./plugins/sqlbroker",
+      "description": "Alias-based MSSQL broker for Claude Code on Windows. Stores DPAPI-encrypted credentials locally so the chat never sees passwords. Includes /sqlbroker:install, /sqlbroker:add, /sqlbroker:list, /sqlbroker:test, /sqlbroker:remove, /sqlbroker:status, plus the sqlbroker skill that auto-activates on any DB-query intent.",
+      "category": "database",
+      "version": "1.0.0",
+      "tags": ["mssql", "sql-server", "windows", "mcp", "broker"]
+    }
+  ]
+}
