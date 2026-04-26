@@ -38,7 +38,21 @@ def _write(obj):
 
 
 def main():
-    for line in sys.stdin:
+    # Emit a readiness signal on stderr — some MCP clients (e.g. Codex CLI 0.125+)
+    # appear to wait for stderr activity before sending the first request, mirroring
+    # what mssql-mcp does ("Server ready."). Harmless for clients that don't watch.
+    print(f"sqlbroker stdio_proxy ready (broker={URL})", file=sys.stderr, flush=True)
+
+    # Use readline() loop with explicit flush instead of `for line in sys.stdin`
+    # because Windows + Python iteration can hold lines in an internal buffer
+    # until a chunk fills, which manifests as "Transport closed" on the client.
+    while True:
+        try:
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if not line:
+            return  # EOF — client closed stdin
         line = line.strip()
         if not line:
             continue
@@ -51,10 +65,12 @@ def main():
             )
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 body = resp.read().decode("utf-8")
-            sys.stdout.write(body)
-            if not body.endswith("\n"):
-                sys.stdout.write("\n")
-            sys.stdout.flush()
+            if body:
+                sys.stdout.write(body)
+                if not body.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+            # Empty body (HTTP 202 for notifications) → no stdout output, correct.
         except urllib.error.URLError as e:
             _write(_err(_id_from(line), f"sqlbroker unreachable at {URL}: {e}"))
         except Exception as e:
