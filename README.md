@@ -68,8 +68,9 @@ Both CLIs read the same broker source under `plugins/sqlbroker/`. The manifests 
 
 The skill checks `curl http://127.0.0.1:8765/health` first. **If the broker is already running** (e.g. you installed via the other CLI on this same host), the skill skips the elevated deploy and just wires the missing MCP config — no UAC/sudo needed. **If not running**, it elevates and runs the OS-appropriate deploy script.
 
-**Claude Code:** `/sqlbroker:install` (UAC on Windows / sudo on Unix when broker not yet running)
-**Codex CLI:** `/sqlbroker-install` — Codex sandboxes typically can't elevate, so if the broker is NOT yet running, the skill prints the manual elevation command for you to run in your own terminal, then `codex mcp add` is called from inside the sandbox once the broker is up.
+**Claude Code:** type `/sqlbroker:install` (UAC on Windows / sudo on Unix when broker not yet running). Claude exposes plugin commands as slash invocations.
+
+**Codex CLI:** Codex does **not** expose plugin skills as slash commands — `/sqlbroker-install` returns "Unrecognized command". Instead, ask the agent in plain language: `"install sqlbroker"` or `"set up sqlbroker on this machine"`. The Codex agent will pick up the `sqlbroker-install` skill and follow it. Since Codex sandboxes typically can't elevate themselves, the agent will print the manual elevation command for you to run in your own terminal, then call `codex mcp add` from inside the sandbox once the broker is up.
 
 | OS | What deploy installs |
 |---|---|
@@ -89,10 +90,10 @@ Codex's own CLI rewrites `~/.codex/config.toml`. Verify with `codex mcp list`.
 
 ### 3) Add your first connection
 
-**Claude Code:** `/sqlbroker:add prod_main`
-**Codex CLI:** `/sqlbroker-add prod_main`
+**Claude Code:** type `/sqlbroker:add prod_main`
+**Codex CLI:** ask the agent `"add a sqlbroker alias called prod_main"` (no slash command — Codex skills are AI-invoked from natural language)
 
-The agent collects host / user / db / policy in chat (policy via an `AskUserQuestion`-style form on Claude, or interactive prompt on Codex). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
+Either way, the agent collects host / user / db / policy in chat (policy via an `AskUserQuestion`-style form on Claude, or interactive prompt on Codex). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
 
 ### 4) Use it
 
@@ -280,21 +281,25 @@ sqlbroker-plugin/                           # the repo
 
 ---
 
-## Slash commands
+## How to invoke ops on each CLI
 
-The same 9 ops, two invocation styles. Pick the row matching your CLI.
+The plugin ships 9 ops + 1 auto-router skill. Invocation differs per CLI:
 
-| Claude Code | Codex CLI | Purpose |
+| Op | Claude Code (slash) | Codex CLI (natural language to the agent) |
 |---|---|---|
-| `/sqlbroker:install` | `/sqlbroker-install` | Install the local service (deploy.ps1 / deploy.sh elevated) |
-| `/sqlbroker:update` | `/sqlbroker-update` | Refresh broker code after a plugin upgrade (skips Python/ODBC) |
-| `/sqlbroker:add <alias>` | `/sqlbroker-add <alias>` | Add a new alias — chat for non-secrets, terminal for password |
-| `/sqlbroker:list` | `/sqlbroker-list` | List all aliases (no credentials) |
-| `/sqlbroker:test <alias>` | `/sqlbroker-test <alias>` | Run a 4-column identity query against the alias |
-| `/sqlbroker:rotate <alias>` | `/sqlbroker-rotate <alias>` | Rotate password only — host/user/policy untouched |
-| `/sqlbroker:remove <alias>` | `/sqlbroker-remove <alias>` | Delete alias from config |
-| `/sqlbroker:status` | `/sqlbroker-status` | Service health + alias list |
-| `/sqlbroker:diff <a> <b> <obj>` | `/sqlbroker-diff <a> <b> <obj>` | Diff a proc/view/function across two aliases (or two databases) |
+| Install service | `/sqlbroker:install` | `"install sqlbroker"` |
+| Refresh broker code | `/sqlbroker:update` | `"update sqlbroker to latest"` |
+| Add alias | `/sqlbroker:add <alias>` | `"add a sqlbroker alias called <alias>"` |
+| List aliases | `/sqlbroker:list` | `"list sqlbroker aliases"` |
+| Test alias | `/sqlbroker:test <alias>` | `"test sqlbroker alias <alias>"` |
+| Rotate password | `/sqlbroker:rotate <alias>` | `"rotate password for sqlbroker alias <alias>"` |
+| Remove alias | `/sqlbroker:remove <alias>` | `"remove sqlbroker alias <alias>"` |
+| Service health | `/sqlbroker:status` | `"check sqlbroker status"` |
+| Diff object | `/sqlbroker:diff <a> <b> <obj>` | `"diff <obj> between sqlbroker aliases <a> and <b>"` |
+
+**Why the difference?** Claude Code's plugin system maps `commands/*.md` directly to slash commands. **Codex CLI does NOT** — its slash commands are reserved for built-ins (`/plugins`, `/model`, `/help`, …) and skills are auto-loaded into the agent's context, invoked by the model when the user expresses intent in natural language. Both routes ultimately load the same skill file (`plugins/sqlbroker/skills/sqlbroker-<name>/SKILL.md`) and run the same MCP tools.
+
+Once the broker MCP server is wired (`mcp_servers.sqlbroker` in `~/.codex/config.toml`), you can also ask in MCP-tool style: `"list databases on prod_main"` → the agent calls `mcp__sqlbroker__list_databases(alias="prod_main")` directly, bypassing the skill layer.
 
 ## MCP tools (auto-routed via the skill — 14 total)
 
@@ -365,10 +370,46 @@ python manage_conn.py migrate
 
 ---
 
+## Updating to a new plugin version
+
+**Claude Code** (one shot):
+
+```
+/sqlbroker:update
+```
+
+**Codex CLI** (two steps because Codex's plugin manager and the broker service are separate concerns):
+
+```bash
+# 1. Pull the latest plugin source from GitHub into Codex's cache
+codex plugin marketplace upgrade sqlbroker-marketplace
+
+# If the upgrade fails with "Access is denied" (a known Codex 0.125 quirk on
+# Windows when the cache has open file handles), use the clean re-add path:
+codex plugin marketplace remove sqlbroker-marketplace
+rm -rf ~/.codex/.tmp/marketplaces/sqlbroker-marketplace          # Unix
+Remove-Item -Recurse -Force "$env:USERPROFILE\.codex\.tmp\marketplaces\sqlbroker-marketplace"  # Windows
+codex plugin marketplace add creamac/sqlbroker-plugin
+```
+
+```bash
+# 2. Refresh the deployed broker code. Two options:
+
+# (a) Ask the Codex agent — it'll invoke the sqlbroker-update skill
+#     and print the elevation command for you:
+#       > "update sqlbroker broker to latest"
+
+# (b) Run deploy.ps1 -RefreshOnly directly (faster, no AI roundtrip):
+$deploy = "$env:USERPROFILE\.codex\plugins\cache\sqlbroker-marketplace\sqlbroker\<version>\scripts\deploy.ps1"
+Start-Process powershell -Verb RunAs -ArgumentList @('-NoProfile','-File',$deploy,'-RefreshOnly','-AutoWire')
+```
+
+Step 2 needs admin (UAC on Windows / sudo on Unix) because the broker service has to be bounced. `connections.json` and `master.key` are NEVER touched by `-RefreshOnly`.
+
 ## Verifying it works
 
 **Claude Code:** `/sqlbroker:status`
-**Codex CLI:** `/sqlbroker-status`
+**Codex CLI:** ask `"check sqlbroker status"`
 
 Or directly (works regardless of which CLI is wired):
 
@@ -583,13 +624,21 @@ A formal pre-mortem identified five candidate failure modes; smoke-testing on Co
 | 4 | `installation: AVAILABLE` requires interactive `/plugins` install — README's `codex plugin install <name>` command doesn't exist | ✅ confirmed (CLI returned `unrecognized subcommand`) | Changed to `INSTALLED_BY_DEFAULT` (auto-installs); README rewritten to remove fake CLI command |
 | 5 | CRLF line endings corrupt `deploy.sh` on Linux/macOS first install | ✅ confirmed (git status warning) | Added `.gitattributes` enforcing `*.sh text eol=lf`, `*.py text eol=lf`, `*.ps1 text eol=crlf` |
 
-### v2.8 — known sharp edges still in production
+### v2.8 — bugs found post-merge by real-world Codex install
 
-These are remaining surprises (not blockers) — documented so users hit them with a known-name rather than blind confusion.
+Three bugs that the pre-merge pre-mortem missed because they only surface with a real Codex 0.125 session, fixed in v2.8.1:
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `for line in sys.stdin:` buffers on Windows | Codex 0.125 reports `MCP startup failed: Transport closed` for sqlbroker even though manual stdin piping works | `stdio_proxy.py` switched to explicit `readline()` loop + emits `sqlbroker stdio_proxy ready` on stderr (mirrors mssql-mcp's readiness signal) |
+| Codex spawns `.bat` files unreliably | Same "Transport closed" when MCP `command` points at `run_stdio_proxy.bat` | Recommend `codex mcp add sqlbroker -- python.exe -u stdio_proxy.py` instead — bypass cmd shell + bat |
+| README claimed `/sqlbroker-install` etc. as Codex slash commands | "Unrecognized command" in interactive Codex | Codex skills aren't slash commands; they're AI-invoked from natural language. Slash commands table in README rewritten as a "how to invoke" comparison. |
+| `defaultPrompt` array of 4 hits Codex's max-3 limit | Manifest validation warning logged repeatedly | Trimmed to 3 entries |
+| Plugin cache stale after marketplace upgrade hits "Access denied" | Skills don't load even after `codex plugin marketplace upgrade` | Documented clean-rebuild workaround: `marketplace remove` + `rm -rf ~/.codex/.tmp/marketplaces/<name>` + `marketplace add` |
+
+### v2.8 — known sharp edges still in production
 
 1. **`-RefreshOnly` skips MCP wiring on both platforms.** If you ran the first install without `-Codex` and now want Codex wired, re-run *without* `-RefreshOnly`. Documented in the Configuration table.
 2. **TOML patch overwrites the entire `[mcp_servers.sqlbroker]` block.** Hand-edited `env_vars`, custom `cwd`, or `startup_timeout_sec` get nuked on re-deploy. The script writes a `.bak.YYYYMMDDHHMMSS` first.
 3. **`codex mcp add` may not be on PATH for an elevated Windows shell** when Codex was installed per-user via `npm`. Fallback TOML patch handles this, but it requires `tomli_w` install — offline machines may silently fail.
-4. **Codex skill activation on first install is sometimes delayed by one session.** If you ran `codex plugin marketplace add ...` mid-session, the skill may not appear until you exit and relaunch `codex`. Use `/plugins` to confirm `sqlbroker` shows green before invoking `/sqlbroker-install`.
-
-If any bite us in production we'll iterate — broker code itself is unchanged from v2.7.1, so v2.8's blast radius is limited to wiring + UX surface.
+4. **Codex skill activation on first install is sometimes delayed by one session.** If you ran `codex plugin marketplace add ...` mid-session, the skill may not appear until you exit and relaunch `codex`. Use `/plugins` to confirm `sqlbroker` shows green before asking the agent to use it.
