@@ -24,11 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_WIRE=0
 SKIP_MCP_WIRE=0
 REFRESH_ONLY=0
+CODEX=0
 for arg in "$@"; do
   case "$arg" in
     --auto-wire)     AUTO_WIRE=1 ;;
     --skip-mcp-wire) SKIP_MCP_WIRE=1 ;;
     --refresh-only)  REFRESH_ONLY=1 ;;
+    --codex)         CODEX=1 ;;
   esac
 done
 
@@ -281,6 +283,57 @@ Skipped. Paste this under "mcpServers" in $CLAUDE_JSON yourself:
   }
 
 EOF
+fi
+
+# 7b) Codex CLI wiring (only when --codex passed)
+if [[ "$CODEX" -eq 1 && "$SKIP_MCP_WIRE" -eq 0 ]]; then
+  CODEX_TOML="$TARGET_HOME/.codex/config.toml"
+  info "Wiring sqlbroker into $CODEX_TOML"
+
+  cli_ok=0
+  if command -v codex >/dev/null 2>&1; then
+    if codex mcp add sqlbroker -- "$WRAPPER_SH"; then
+      cli_ok=1
+      ok "Wired via 'codex mcp add'"
+    else
+      warn "codex CLI invocation failed — falling back to direct TOML patch"
+    fi
+  else
+    warn "codex CLI not on PATH — falling back to direct TOML patch"
+  fi
+
+  if [[ "$cli_ok" -eq 0 ]]; then
+    info 'Installing tomli_w into broker venv for TOML patch (small pure-Python dep)'
+    "$VENV_PY" -m pip install --quiet tomli_w || warn 'tomli_w install failed; skipping'
+    if "$VENV_PY" -c 'import tomli_w' 2>/dev/null; then
+      mkdir -p "$(dirname "$CODEX_TOML")"
+      [[ ! -f "$CODEX_TOML" ]] && : > "$CODEX_TOML"
+      cp "$CODEX_TOML" "$CODEX_TOML.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+      WRAPPER_SH="$WRAPPER_SH" CODEX_TOML="$CODEX_TOML" "$VENV_PY" - <<'PY'
+import os, sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import tomli_w
+p = os.environ["CODEX_TOML"]
+wrapper = os.environ["WRAPPER_SH"]
+with open(p, "rb") as f:
+    raw = f.read()
+data = tomllib.loads(raw.decode("utf-8")) if raw.strip() else {}
+data.setdefault("mcp_servers", {})
+data["mcp_servers"]["sqlbroker"] = {"command": wrapper, "args": []}
+with open(p, "wb") as f:
+    f.write(tomli_w.dumps(data).encode("utf-8"))
+print(f"Wrote [mcp_servers.sqlbroker] to {p}")
+PY
+      if [[ -n "${SUDO_USER:-}" ]]; then
+        chown -R "$SUDO_USER" "$(dirname "$CODEX_TOML")" 2>/dev/null || true
+      fi
+      ok "Patched $CODEX_TOML directly"
+    fi
+  fi
+  echo "  Then in Codex CLI: restart it (or run 'codex mcp list' to verify)"
 fi
 
 cat <<EOF

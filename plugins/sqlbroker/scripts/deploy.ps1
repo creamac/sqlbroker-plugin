@@ -23,7 +23,8 @@ param(
   [switch]$SkipService,
   [switch]$AutoWire,        # auto-yes on the ~/.claude.json wiring prompt
   [switch]$SkipMcpWire,     # don't touch ~/.claude.json at all
-  [switch]$RefreshOnly      # only copy files + bounce service; skip Python/ODBC/Task setup
+  [switch]$RefreshOnly,     # only copy files + bounce service; skip Python/ODBC/Task setup
+  [switch]$Codex            # also wire into ~/.codex/config.toml for Codex CLI
 )
 
 $ErrorActionPreference = 'Stop'
@@ -342,6 +343,61 @@ print("Wrote MCP entry 'sqlbroker' to", p)
   Write-Host 'Skipped. Paste this under "mcpServers" in ~\.claude.json yourself:' -ForegroundColor Yellow
   $entry = [ordered]@{ sqlbroker = [ordered]@{ command = $wrapperBat; args = @() } }
   Write-Host ($entry | ConvertTo-Json -Depth 5)
+}
+
+# --- 6b) Codex CLI wiring (only when -Codex passed) ---
+if ($Codex -and -not $SkipMcpWire) {
+  $codexToml = Join-Path $env:USERPROFILE '.codex\config.toml'
+  Info "Wiring sqlbroker into $codexToml"
+
+  # Try the codex CLI first (cleanest path — Codex owns its own TOML)
+  $codexCli = Get-Command codex -ErrorAction SilentlyContinue
+  $cliOk = $false
+  if ($codexCli) {
+    try {
+      # cmd /c so the `--` separator parses correctly in any PS version
+      & cmd.exe /c "codex mcp add sqlbroker -- `"$wrapperBat`"" 2>&1 | Out-Host
+      if ($LASTEXITCODE -eq 0) { $cliOk = $true; Ok "Wired via 'codex mcp add'" }
+    } catch { Warn "codex CLI invocation failed: $_" }
+  } else {
+    Warn 'codex CLI not on PATH (expected if running elevated and codex installed per-user via npm) — falling back to direct TOML patch'
+  }
+
+  # Fallback: direct TOML patch via embedded Python + tomli_w
+  if (-not $cliOk) {
+    Info 'Installing tomli_w for TOML patch (one-time, small pure-Python dep)'
+    & $pyExe -m pip install --quiet --no-warn-script-location tomli_w
+    if ($LASTEXITCODE -ne 0) { Warn 'tomli_w install failed; skipping Codex wiring'; }
+    else {
+      if (-not (Test-Path $codexToml)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $codexToml -Parent) | Out-Null
+        Set-Content -Path $codexToml -Value '' -Encoding UTF8
+      } else {
+        Copy-Item $codexToml "$codexToml.bak.$(Get-Date -Format yyyyMMddHHmmss)" -Force
+      }
+      $env:MCP_CODEX_TOML = $codexToml
+      $env:MCP_WRAPPER    = $wrapperBat
+      $codexPatch = @'
+import os, sys, tomllib, tomli_w
+p = os.environ['MCP_CODEX_TOML']
+with open(p, 'rb') as f:
+    raw = f.read()
+data = tomllib.loads(raw.decode('utf-8')) if raw.strip() else {}
+data.setdefault('mcp_servers', {})
+data['mcp_servers']['sqlbroker'] = {
+    'command': os.environ['MCP_WRAPPER'],
+    'args': [],
+}
+with open(p, 'wb') as f:
+    f.write(tomli_w.dumps(data).encode('utf-8'))
+print(f"Wrote [mcp_servers.sqlbroker] to {p}")
+'@
+      $codexPatch | & $pyExe -
+      Remove-Item Env:\MCP_CODEX_TOML, Env:\MCP_WRAPPER -ErrorAction SilentlyContinue
+      if ($LASTEXITCODE -eq 0) { Ok "Patched $codexToml directly" }
+    }
+  }
+  Write-Host '  Then in Codex CLI: restart it (or run `codex mcp list` to verify)' -ForegroundColor Yellow
 }
 
 Write-Host ''
