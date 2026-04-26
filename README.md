@@ -1,16 +1,19 @@
-# sqlbroker — Claude Code marketplace + plugin
+# sqlbroker — Claude Code & Codex CLI marketplace + plugin
 
-> Talk to MSSQL from Claude Code by **alias name**, never by credentials.
+> Talk to MSSQL from Claude Code or OpenAI Codex CLI by **alias name**, never by credentials.
 
 A local broker holds your SQL Server passwords in an encrypted file
-(`master.key` + AES-128-CBC + HMAC-SHA256). Claude calls databases by
-alias only — host, user, and password never enter the conversation.
-Cross-platform: Windows / macOS / Linux.
+(`master.key` + AES-128-CBC + HMAC-SHA256). Your AI agent calls databases
+by alias only — host, user, and password never enter the conversation.
+Cross-platform: Windows / macOS / Linux. **One repo, two manifests** —
+the same plugin works for Claude Code (`/plugin marketplace add ...`) and
+Codex CLI (`codex plugin marketplace add ...`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Version](https://img.shields.io/badge/version-2.7.1-blue)
 ![Tools](https://img.shields.io/badge/MCP_tools-14-green)
 ![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
+![Hosts](https://img.shields.io/badge/hosts-Claude_Code_%7C_Codex_CLI-purple)
 
 ```
 You:   "list databases on prod_main"
@@ -30,11 +33,15 @@ The skill auto-activates on any DB-query intent and routes through the broker.
 
 | OS | Need yourself | Auto-installed by `deploy` |
 |---|---|---|
-| **Windows** | Claude Code, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task |
-| **macOS** | Claude Code, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `pycryptodome`, launchd plist. ODBC: `brew install msodbcsql18` (manual) |
-| **Linux** | Claude Code, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `pycryptodome`, systemd unit. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
+| **Windows** | Claude Code or Codex CLI 0.124+, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task |
+| **macOS** | Claude Code or Codex CLI 0.124+, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `pycryptodome`, launchd plist. ODBC: `brew install msodbcsql18` (manual) |
+| **Linux** | Claude Code or Codex CLI 0.124+, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `pycryptodome`, systemd unit. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
+
+You can install on either CLI alone, or **both** — pass `-Codex` (Windows) / `--codex` (Unix) to the deploy script and it will wire `~/.claude.json` AND `~/.codex/config.toml` in one run.
 
 ### 1) Install the plugin (every OS)
+
+**Claude Code:**
 
 ```
 /plugin marketplace add creamac/sqlbroker-plugin
@@ -42,29 +49,51 @@ The skill auto-activates on any DB-query intent and routes through the broker.
 /reload-plugins
 ```
 
+**Codex CLI (0.124+):**
+
+```
+codex plugin marketplace add creamac/sqlbroker-plugin
+```
+
+The marketplace declares `installation: INSTALLED_BY_DEFAULT`, so the plugin is auto-enabled on the next Codex session start. To verify, launch `codex` and type `/plugins` — `sqlbroker` should appear with a green dot. (If you cloned the repo locally, pass the absolute path instead of the GitHub shorthand.)
+
+Both CLIs read the same broker source under `plugins/sqlbroker/`. The manifests live in two different places per platform convention:
+
+| Host | Marketplace manifest | Plugin manifest |
+|---|---|---|
+| Claude Code | `.claude-plugin/marketplace.json` | `plugins/sqlbroker/.claude-plugin/plugin.json` |
+| Codex CLI | `.agents/plugins/marketplace.json` (per OpenAI convention) | `plugins/sqlbroker/.codex-plugin/plugin.json` |
+
 ### 2) Install the local service
+
+**Claude Code:**
 
 ```
 /sqlbroker:install
 ```
 
-Picks the right deploy script for your OS and runs it elevated.
+**Codex CLI:**
+
+```
+/sqlbroker-install
+```
+
+Either picks the right deploy script for your OS and runs it elevated.
 - **Windows** — UAC dialog → Yes. Embedded Python + ODBC + Scheduled Task all auto-installed.
 - **macOS / Linux** — `sudo` password. Uses your system `python3`, registers launchd plist or systemd unit.
 
-The script ends by patching `~/.claude.json` with the MCP wiring (auto-confirm with `-AutoWire` / `--auto-wire`).
+The script ends by patching `~/.claude.json` with the MCP wiring (auto-confirm with `-AutoWire` / `--auto-wire`). Add `-Codex` (Windows) or `--codex` (Unix) to also patch `~/.codex/config.toml` in the same run — useful if you use both CLIs.
 
 ### 3) Add your first connection
 
-```
-/sqlbroker:add prod_main
-```
+**Claude Code:** `/sqlbroker:add prod_main`
+**Codex CLI:** `/sqlbroker-add prod_main`
 
-Claude collects host / user / db / policy in chat (policy via the `AskUserQuestion` form). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
+The agent collects host / user / db / policy in chat (policy via an `AskUserQuestion`-style form on Claude, or interactive prompt on Codex). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
 
 ### 4) Use it
 
-Just ask Claude things like:
+Just ask the agent things like:
 
 ```
 "list_databases ของ prod_main"
@@ -74,7 +103,7 @@ Just ask Claude things like:
 "compare definition ของ usp_X ระหว่าง staging_main กับ prod_main"
 ```
 
-The skill auto-routes to the right MCP tool — no need to remember tool names.
+The auto-router skill (`sqlbroker`) picks up the intent on either CLI and dispatches to the right one of the 14 MCP tools — no need to remember tool names.
 
 ---
 
@@ -93,12 +122,24 @@ Without a broker, every MSSQL connection from an AI agent looks like one of thes
 }
 ```
 
+```toml
+# ~/.codex/config.toml — same problem, different syntax
+[mcp_servers.mssql]
+command = "cmd"
+args = ["/c", "npx.cmd", "-y", "mssql-mcp@2.3.2"]
+
+[mcp_servers.mssql.env]
+DB_PASSWORD = "Hunter2!"   # 😱 plaintext, world-readable on most setups
+DB_SERVER = "10.0.0.5,1433"
+DB_USER = "appuser"
+```
+
 ```python
 # Or in a chat:
 > "connect to 10.0.0.5 as appuser with password Hunter2! then run..."
 ```
 
-Both leak credentials into config files, transcripts, and shell history.
+All three leak credentials into config files, transcripts, and shell history.
 sqlbroker stores the passwords once, encrypted (master.key + Fernet), and exposes only **alias names** through MCP — `execute_sql(alias="prod_main", query="...")`.
 
 ### Problem 2 — one MCP server per database eats tokens & config
@@ -175,23 +216,28 @@ Auth (v2.4+): **SQL login** (verified, default), **Windows Authentication** (`Tr
 | **macOS 12+** | launchd (`com.creamac.mcp-sqlbroker.plist`) | `KeepAlive=true` |
 | **Linux (Debian/Ubuntu/RHEL/Fedora, systemd)** | systemd unit | `Restart=on-failure`, `RestartSec=5` |
 
-### Claude Code
+### Claude Code & Codex CLI
 
-Tested with the marketplace + plugin slash command flow on Claude Code Desktop. Plugin manifest version is 1.0+; works with the `/plugin install <plugin>@<owner>/<repo>` syntax.
+| Host | Plugin manifest | MCP wiring |
+|---|---|---|
+| **Claude Code Desktop / CLI** | `.claude-plugin/marketplace.json` + `plugins/sqlbroker/.claude-plugin/plugin.json` | `~/.claude.json` `mcpServers.sqlbroker` (JSON) |
+| **Codex CLI 0.124+** | `.agents/plugins/marketplace.json` + `plugins/sqlbroker/.codex-plugin/plugin.json` | `~/.codex/config.toml` `[mcp_servers.sqlbroker]` (TOML) |
+
+Same broker process, same MCP tool surface — only the wiring format differs. The `-Codex` / `--codex` flag on the deploy script handles both formats in one run. Claude exposes 9 slash commands as `/sqlbroker:<name>`; Codex exposes 9 skills as `/sqlbroker-<name>`. Skill files at `skills/sqlbroker-*/SKILL.md` (used by Codex) and command files at `commands/*.md` (used by Claude) carry the same content; both files include a maintenance note pointing at each other so a single edit keeps them in sync.
 
 ---
 
 ## Architecture
 
 ```
-Claude Code
-    │
-    │  stdio JSON-RPC
-    ▼
-run_stdio_proxy.[bat|sh] → stdio_proxy.py  (pure stdlib shim)
-    │
-    │  HTTP POST /mcp
-    ▼
+Claude Code  ┐
+             │ stdio JSON-RPC
+Codex CLI    ┘
+             ▼
+run_stdio_proxy.[bat|sh] → stdio_proxy.py  (pure stdlib shim, no deps)
+             │
+             │ HTTP POST /mcp
+             ▼
 mcp-sqlbroker service (127.0.0.1:8765)
     ├─ connections.json  — host/user/db/policy/auth_mode + password_enc (Fernet AES blob)
     ├─ master.key        — 32 random bytes generated at install
@@ -200,7 +246,27 @@ mcp-sqlbroker service (127.0.0.1:8765)
     └─ pyodbc → MSSQL (auth: SQL login | Windows | AAD-SPN)
 ```
 
-The chat sees alias names only — never hosts, users, or passwords.
+The chat sees alias names only — never hosts, users, or passwords. Both CLIs spawn the **same** `stdio_proxy.py` process, which talks to the **one** broker service. No per-CLI processes; no duplicated connections.
+
+### How dual-platform works (one repo, two manifests)
+
+```
+sqlbroker-plugin/                           # the repo
+├── .claude-plugin/marketplace.json         # Claude reads this
+├── .agents/plugins/marketplace.json        # Codex reads this (OpenAI convention)
+└── plugins/sqlbroker/
+    ├── .claude-plugin/plugin.json          # Claude plugin manifest
+    ├── .codex-plugin/plugin.json           # Codex plugin manifest (different schema — interface{}, etc.)
+    ├── skills/                             # 1 router + 9 ops skills (read by Codex; mirror of commands/)
+    │   ├── sqlbroker/SKILL.md              # auto-activator on both CLIs
+    │   └── sqlbroker-{install,add,...}/SKILL.md
+    ├── commands/                           # Claude slash commands (mirror of skills/sqlbroker-*/)
+    └── scripts/                            # broker source (shared, deployed by either CLI)
+```
+
+- **Claude Code**: `commands/install.md` carries the full instructions. Slash invocation: `/sqlbroker:install`. Claude does NOT substitute `${CLAUDE_PLUGIN_ROOT}` in command bodies, so the content has to live inline.
+- **Codex CLI**: `skills/sqlbroker-install/SKILL.md` carries the same content. Slash invocation: `/sqlbroker-install`. Codex auto-loads skills declared by the plugin manifest's `skills: "./skills/"` field.
+- **Maintenance contract:** each command file references its skill twin in a `Maintenance note:` line, and vice versa. When you edit one, edit the other in the same commit.
 
 ### Threat model
 
@@ -213,17 +279,19 @@ The chat sees alias names only — never hosts, users, or passwords.
 
 ## Slash commands
 
-| Command | Purpose |
-|---|---|
-| `/sqlbroker:install` | Install the local service (deploy.ps1 / deploy.sh elevated) |
-| `/sqlbroker:update` | Refresh broker code after a plugin upgrade (skips Python/ODBC) |
-| `/sqlbroker:add <alias>` | Add a new alias — chat for non-secrets, terminal for password |
-| `/sqlbroker:list` | List all aliases (no credentials) |
-| `/sqlbroker:test <alias>` | Run a 4-column identity query against the alias |
-| `/sqlbroker:rotate <alias>` | Rotate password only — host/user/policy untouched |
-| `/sqlbroker:remove <alias>` | Delete alias from config |
-| `/sqlbroker:status` | Service health + alias list |
-| `/sqlbroker:diff <a> <b> <obj>` | Diff a proc/view/function across two aliases (or two databases) |
+The same 9 ops, two invocation styles. Pick the row matching your CLI.
+
+| Claude Code | Codex CLI | Purpose |
+|---|---|---|
+| `/sqlbroker:install` | `/sqlbroker-install` | Install the local service (deploy.ps1 / deploy.sh elevated) |
+| `/sqlbroker:update` | `/sqlbroker-update` | Refresh broker code after a plugin upgrade (skips Python/ODBC) |
+| `/sqlbroker:add <alias>` | `/sqlbroker-add <alias>` | Add a new alias — chat for non-secrets, terminal for password |
+| `/sqlbroker:list` | `/sqlbroker-list` | List all aliases (no credentials) |
+| `/sqlbroker:test <alias>` | `/sqlbroker-test <alias>` | Run a 4-column identity query against the alias |
+| `/sqlbroker:rotate <alias>` | `/sqlbroker-rotate <alias>` | Rotate password only — host/user/policy untouched |
+| `/sqlbroker:remove <alias>` | `/sqlbroker-remove <alias>` | Delete alias from config |
+| `/sqlbroker:status` | `/sqlbroker-status` | Service health + alias list |
+| `/sqlbroker:diff <a> <b> <obj>` | `/sqlbroker-diff <a> <b> <obj>` | Diff a proc/view/function across two aliases (or two databases) |
 
 ## MCP tools (auto-routed via the skill — 14 total)
 
@@ -249,7 +317,7 @@ The chat sees alias names only — never hosts, users, or passwords.
 **Data (v2.6):**
 - `preview_table(alias, table_name, top_n?, database?)` — safe `SELECT TOP n *`
 
-All tools auto-prefix `mcp__plugin_sqlbroker_sqlbroker__` when called by Claude.
+All tools auto-prefix `mcp__plugin_sqlbroker_sqlbroker__` when called by Claude Code (and an equivalent prefix on Codex). The auto-router skill picks the most specific tool — only fall back to `execute_sql` for custom joins across catalog views, multi-result-set procs, etc.
 
 ## Policies
 
@@ -296,11 +364,10 @@ python manage_conn.py migrate
 
 ## Verifying it works
 
-```
-/sqlbroker:status
-```
+**Claude Code:** `/sqlbroker:status`
+**Codex CLI:** `/sqlbroker-status`
 
-Or directly:
+Or directly (works regardless of which CLI is wired):
 
 ```powershell
 Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing | Select-Object -Expand Content
@@ -312,15 +379,37 @@ curl -fsS http://127.0.0.1:8765/health
 
 Expected: `{"ok":true,"server":"sqlbroker"}`
 
+To confirm the MCP wiring on each CLI:
+
+```bash
+# Claude Code — check ~/.claude.json
+python -c "import json; print(json.load(open(r'C:\Users\you\.claude.json')).get('mcpServers',{}).get('sqlbroker'))"
+
+# Codex CLI — built-in inspector
+codex mcp list
+codex mcp get sqlbroker
+```
+
 ---
 
 ## Uninstall
+
+**Claude Code:**
 
 ```
 /plugin uninstall sqlbroker
 /plugin marketplace remove sqlbroker-marketplace
 /reload-plugins
 ```
+
+**Codex CLI:**
+
+```
+codex plugin marketplace remove sqlbroker-marketplace
+codex mcp remove sqlbroker
+```
+
+(Both `codex plugin marketplace remove` and `codex mcp remove` exist as CLI subcommands. There is no `codex plugin install/uninstall` — install is automatic via `installation: INSTALLED_BY_DEFAULT` in the marketplace manifest, or interactive via `/plugins` inside a Codex session.)
 
 Then stop & remove the service:
 
@@ -347,7 +436,7 @@ sudo rm /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist
 sudo rm -rf /opt/mcp-sqlbroker
 ```
 
-Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if `deploy` patched it for you.
+Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` (Claude Code) and/or `[mcp_servers.sqlbroker]` from `~/.codex/config.toml` (Codex) if `deploy` patched them for you. The deploy script saves a `.bak.YYYYMMDDHHMMSS` next to each before patching, so you can also restore that backup.
 
 ---
 
@@ -364,9 +453,10 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if
 | `-ServiceUser` / `-ServicePassword` | (empty → SYSTEM) | Run as a named user instead |
 | `-SkipOdbc` | off | Skip ODBC Driver 18 auto-install |
 | `-SkipService` | off | Files only, no service |
-| `-AutoWire` | off | Skip the y/n prompt and write the MCP entry |
-| `-SkipMcpWire` | off | Don't touch `~/.claude.json` at all |
-| `-RefreshOnly` | off | Just copy files + bounce Scheduled Task (skip Python/ODBC) — used by `/sqlbroker:update` |
+| `-AutoWire` | off | Skip the y/n prompt and write the MCP entry to `~/.claude.json` |
+| `-SkipMcpWire` | off | Don't touch `~/.claude.json` (or `~/.codex/config.toml`) at all |
+| `-RefreshOnly` | off | Just copy files + bounce Scheduled Task (skip Python/ODBC) — used by `/sqlbroker:update`. **Skips MCP wiring** — combine with re-running without `-RefreshOnly` if you want wiring updated. |
+| `-Codex` | off | Also wire `~/.codex/config.toml` `[mcp_servers.sqlbroker]`. Tries `codex mcp add sqlbroker -- <wrapper>` first; falls back to direct TOML patch via embedded Python + `tomli_w` if the Codex CLI isn't on PATH (common when running elevated and Codex was installed per-user via npm). |
 
 `deploy.sh` (Linux/macOS) — env vars + flags:
 
@@ -380,8 +470,9 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if
 | Flag | Notes |
 |---|---|
 | `--auto-wire` | Skip the y/n prompt and write the MCP entry to `$SUDO_USER`'s `~/.claude.json` |
-| `--skip-mcp-wire` | Don't touch `~/.claude.json` |
-| `--refresh-only` | Bounce systemd unit / launchd plist after copying files (skip venv/deps) |
+| `--skip-mcp-wire` | Don't touch `~/.claude.json` (or `~/.codex/config.toml`) |
+| `--refresh-only` | Bounce systemd unit / launchd plist after copying files (skip venv/deps). **Skips MCP wiring**. |
+| `--codex` | Also wire `~/.codex/config.toml` — same fallback chain as Windows (`codex mcp add` first, direct TOML patch second). |
 
 ---
 
@@ -395,23 +486,43 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` if
 | Service stuck PAUSED (Windows v2.1 NSSM legacy) | One-time: `D:\util\nssm.exe reset mcp-sqlbroker Throttle && D:\util\nssm.exe start mcp-sqlbroker`. Better: re-run `/sqlbroker:install` to migrate to Scheduled Task. |
 | Aliases listed but `execute_sql` says "No encrypted password" | v2.0–2.2 → v2.3 migration didn't complete (e.g. systemd daemon couldn't reach Secret Service). Run `python manage_conn.py migrate` manually, or re-add the alias. |
 | ODBC connection: `SSL Provider: certificate verify failed` | Add `TrustServerCertificate=yes` in the alias's `driver` field, or install proper SQL Server certs |
+| **Codex** — `codex mcp list` doesn't show `sqlbroker` after `-Codex` deploy | Either: (a) the deploy ran elevated and your codex CLI is per-user (npm) → fallback TOML patch should have run, check for backup file `~/.codex/config.toml.bak.*`; (b) `tomli_w` install failed inside the broker venv. Re-run deploy without elevation, or manually `codex mcp add sqlbroker -- D:\util\mcp-sqlbroker\run_stdio_proxy.bat`. |
+| **Codex** — `codex plugin marketplace add` succeeds but skills don't load | Restart Codex; local marketplaces are picked up at session start. If still missing, check `codex features list \| grep plugins` returns `stable true`. |
+| **Codex** — `[mcp_servers.sqlbroker]` exists but Codex says "tool not found" | The wrapper path may be wrong. Run `codex mcp get sqlbroker` to see what's stored, then verify the path resolves and `python` exists at the embedded location (`D:\util\mcp-sqlbroker\python313\python.exe` on Windows). |
 
 ---
 
 ## Files in this repo
 
 ```
-sqlbroker-marketplace/
+sqlbroker-plugin/
 ├── .claude-plugin/
-│   └── marketplace.json          # marketplace manifest
+│   └── marketplace.json          # Claude Code marketplace manifest
+├── .agents/
+│   └── plugins/
+│       └── marketplace.json      # Codex CLI marketplace manifest (OpenAI convention)
+├── .gitattributes                # enforces LF for .sh/.py, CRLF for .ps1/.bat — required for cross-OS install
 ├── README.md                     # ← you are here
+├── CLAUDE.md                     # AI agent guidance for working in this repo
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # plugin manifest (v2.7.1)
+    │   └── plugin.json           # Claude plugin manifest (v2.7.1)
+    ├── .codex-plugin/
+    │   └── plugin.json           # Codex plugin manifest (v2.7.1, with interface{})
     ├── README.md                 # plugin user guide
-    ├── skills/sqlbroker/SKILL.md # auto-activating skill (with tool-pick cheatsheet)
-    ├── commands/                 # 9 slash commands
+    ├── skills/                   # Codex skill folder (auto-loaded by Codex)
+    │   ├── sqlbroker/SKILL.md            # auto-activating router skill (tool-pick cheatsheet)
+    │   ├── sqlbroker-install/SKILL.md    # install service
+    │   ├── sqlbroker-update/SKILL.md     # refresh broker code
+    │   ├── sqlbroker-add/SKILL.md        # add alias (interactive)
+    │   ├── sqlbroker-list/SKILL.md       # list aliases
+    │   ├── sqlbroker-test/SKILL.md       # test alias
+    │   ├── sqlbroker-rotate/SKILL.md     # rotate password
+    │   ├── sqlbroker-remove/SKILL.md     # remove alias
+    │   ├── sqlbroker-status/SKILL.md     # service health
+    │   └── sqlbroker-diff/SKILL.md       # compare proc across envs
+    ├── commands/                 # Claude slash commands — mirror skills/sqlbroker-*/SKILL.md content (with cross-ref note)
     │   ├── install.md  update.md  add.md  list.md  test.md
     │   ├── rotate.md   remove.md  status.md  diff.md
     └── scripts/
@@ -420,8 +531,8 @@ sqlbroker-marketplace/
         ├── stdio_proxy.py        # stdio→HTTP shim (pure stdlib)
         ├── run_stdio_proxy.bat   # Windows launcher
         ├── run_stdio_proxy.sh    # Unix launcher
-        ├── deploy.ps1            # Windows installer (Task Scheduler)
-        └── deploy.sh             # Linux + macOS installer
+        ├── deploy.ps1            # Windows installer (Task Scheduler) — `-Codex` flag wires Codex too
+        └── deploy.sh             # Linux + macOS installer       — `--codex` flag wires Codex too
 ```
 
 ---
@@ -443,13 +554,39 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | v2.5.0 | ✅ shipped | Schema introspection (4 tools) + connection pool + `/sqlbroker:update` |
 | v2.6.0 | ✅ shipped | +4 tools: `get_server_info`, `find_in_definitions`, `preview_table`, `get_active_queries` |
 | v2.7.0 | ✅ shipped | +3 tools: `compare_definitions`, `find_in_columns`, `get_proc_params` + `/sqlbroker:diff` slash command |
-| **v2.7.1** | ✅ shipped | **Pre-mortem hotfix**: pool resets session state on checkout, friendly DMV permission errors, `deploy.sh --auto-wire`, `-RefreshOnly` preflight check, tool descriptions trimmed ~50% (verbose guidance moved to skill) |
-| v2.8 | idea | Azure AD interactive auth (device code flow) |
-| v2.9 | idea | Per-alias query timeout + concurrency limit |
-| v3.0 | idea | Optional auth token between Claude and the broker (for multi-user / shared hosts) |
+| v2.7.1 | ✅ shipped | **Pre-mortem hotfix**: pool resets session state on checkout, friendly DMV permission errors, `deploy.sh --auto-wire`, `-RefreshOnly` preflight check, tool descriptions trimmed ~50% (verbose guidance moved to skill) |
+| **v2.8.0** | ✅ shipped | **Codex CLI support**: dual-marketplace (`.codex-plugin/`), 9 first-class Codex skills + auto-router, deploy `-Codex`/`--codex` flag (codex CLI primary, TOML patch fallback via `tomli_w`), commands restructured as 1-line shims pointing at single-source skill files |
+| v2.9 | idea | Azure AD interactive auth (device code flow) |
+| v3.0 | idea | Per-alias query timeout + concurrency limit |
+| v3.1 | idea | Optional auth token between AI client and the broker (for multi-user / shared hosts) |
 
 Open issues / PRs welcome at https://github.com/creamac/sqlbroker-plugin/issues
 
 ## Pre-mortem
 
+### v2.3 — keyring → master.key file
+
 The architecture went through one major rewrite (v2.0 keyring → v2.3 file-encrypted) after a pre-mortem identified that running a service as SYSTEM/root meant the daemon couldn't read passwords stored in the **user's** OS keyring. v2.3's `master.key` file approach removes the run-context dependency. See commit `732c6e9` for the full rationale.
+
+### v2.8 — bugs caught before merge by pre-mortem + smoke test
+
+A formal pre-mortem identified five candidate failure modes; smoke-testing on Codex CLI 0.124 confirmed three were real bugs and surfaced two more. All five are now fixed; what follows is the audit trail so future contributors know what NOT to redo.
+
+| # | Predicted failure | Confirmed? | Fix |
+|---|---|---|---|
+| 1 | `${CLAUDE_PLUGIN_ROOT}` doesn't substitute in command bodies; 1-line shim model breaks all 9 Claude slash commands | ✅ confirmed (claude-code-guide research + empirical `env` check) | Reverted commands to inline content with a `Maintenance note:` cross-reference to the skill twin |
+| 2 | Codex marketplace at `.codex-plugin/marketplace.json` (Claude convention) — Codex actually expects `.agents/plugins/marketplace.json` | ✅ confirmed (silent ignore — `codex plugin marketplace add` succeeded without loading any plugins) | Moved manifest to `.agents/plugins/marketplace.json`; Codex now reads + validates it |
+| 3 | `authentication: NONE` invalid value | ✅ confirmed (Codex rejected: `expected ON_INSTALL or ON_USE`) | Changed to `ON_INSTALL` |
+| 4 | `installation: AVAILABLE` requires interactive `/plugins` install — README's `codex plugin install <name>` command doesn't exist | ✅ confirmed (CLI returned `unrecognized subcommand`) | Changed to `INSTALLED_BY_DEFAULT` (auto-installs); README rewritten to remove fake CLI command |
+| 5 | CRLF line endings corrupt `deploy.sh` on Linux/macOS first install | ✅ confirmed (git status warning) | Added `.gitattributes` enforcing `*.sh text eol=lf`, `*.py text eol=lf`, `*.ps1 text eol=crlf` |
+
+### v2.8 — known sharp edges still in production
+
+These are remaining surprises (not blockers) — documented so users hit them with a known-name rather than blind confusion.
+
+1. **`-RefreshOnly` skips MCP wiring on both platforms.** If you ran the first install without `-Codex` and now want Codex wired, re-run *without* `-RefreshOnly`. Documented in the Configuration table.
+2. **TOML patch overwrites the entire `[mcp_servers.sqlbroker]` block.** Hand-edited `env_vars`, custom `cwd`, or `startup_timeout_sec` get nuked on re-deploy. The script writes a `.bak.YYYYMMDDHHMMSS` first.
+3. **`codex mcp add` may not be on PATH for an elevated Windows shell** when Codex was installed per-user via `npm`. Fallback TOML patch handles this, but it requires `tomli_w` install — offline machines may silently fail.
+4. **Codex skill activation on first install is sometimes delayed by one session.** If you ran `codex plugin marketplace add ...` mid-session, the skill may not appear until you exit and relaunch `codex`. Use `/plugins` to confirm `sqlbroker` shows green before invoking `/sqlbroker-install`.
+
+If any bite us in production we'll iterate — broker code itself is unchanged from v2.7.1, so v2.8's blast radius is limited to wiring + UX surface.

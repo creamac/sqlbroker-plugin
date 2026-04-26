@@ -1,14 +1,15 @@
-# sqlbroker — Claude Code plugin
+# sqlbroker — Claude Code & Codex CLI plugin
 
-**Alias-based MSSQL broker for Claude Code (Windows / macOS / Linux).** A local service holds passwords encrypted with `master.key` (AES-128-CBC + HMAC) so the chat never carries credentials.
+**Alias-based MSSQL broker for Claude Code and OpenAI Codex CLI (Windows / macOS / Linux).** A local service holds passwords encrypted with `master.key` (AES-128-CBC + HMAC) so the chat never carries credentials.
 
 ## What you get
 
-- 🛢️ **Skill** — `sqlbroker` auto-activates on any DB-query intent ("select from X", "เช็ค proc ใน Y")
-- ⚡ **9 slash commands** — `/sqlbroker:install`, `/sqlbroker:update`, `/sqlbroker:add`, `/sqlbroker:list`, `/sqlbroker:test`, `/sqlbroker:rotate`, `/sqlbroker:remove`, `/sqlbroker:status`, `/sqlbroker:diff`
+- 🛢️ **Auto-router skill** — `sqlbroker` auto-activates on any DB-query intent ("select from X", "เช็ค proc ใน Y") on both Claude Code and Codex CLI
+- ⚡ **9 commands/skills** — install, update, add, list, test, rotate, remove, status, diff. Invoked as `/sqlbroker:<name>` on Claude or `/sqlbroker-<name>` on Codex
 - 🔌 **14 MCP tools** — schema introspection (list_objects, get_definition, get_table_schema, get_dependencies, find_in_definitions, find_in_columns, get_proc_params, compare_definitions), data (preview_table, execute_sql), runtime (get_server_info, get_active_queries, list_databases, list_aliases)
 - 🛡️ **3 policies** — `readonly` (block all DML/DDL/EXEC), `exec-only` (SELECT + EXEC), `full` (anything)
 - 🔐 **3 auth modes** — SQL login, Windows Authentication (Trusted_Connection), Azure AD service principal
+- 📝 **One source of truth** — skill markdown drives both CLIs; Claude commands are 1-line shims that read the skill file
 
 ## Requirements
 
@@ -20,19 +21,29 @@
 
 ## Install
 
+**Claude Code:**
+
 ```
 /plugin marketplace add creamac/sqlbroker-plugin
 /plugin install sqlbroker@creamac/sqlbroker-plugin
 /reload-plugins
 ```
 
+**Codex CLI:**
+
+```
+codex plugin marketplace add creamac/sqlbroker-plugin
+codex plugin install sqlbroker
+```
+
 Then register the local service (one-time):
 
 ```
-/sqlbroker:install
+/sqlbroker:install        # Claude
+/sqlbroker-install        # Codex
 ```
 
-UAC dialog (Win) or sudo prompt (Unix) → script runs unattended → patches `~/.claude.json` with the MCP wiring entry.
+UAC dialog (Win) or sudo prompt (Unix) → script runs unattended → patches `~/.claude.json` (and `~/.codex/config.toml` if `-Codex` / `--codex` flag set) with the MCP wiring entry.
 
 Full quickstart with prerequisites: see the [marketplace README](../../README.md).
 
