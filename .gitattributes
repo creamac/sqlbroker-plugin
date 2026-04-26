@@ -1,0 +1,27 @@
+# Auto-detect text files, normalize line endings on commit
+* text=auto
+
+# Force LF for files that must run on Unix shells / Linux services
+*.sh        text eol=lf
+*.py        text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.toml      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+LICENSE     text eol=lf
+
+# Force CRLF for Windows-only scripts
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# Binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.zip       binary

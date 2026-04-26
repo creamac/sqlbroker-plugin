@@ -1,20 +1,127 @@
-# Never commit live broker config / runtime artifacts
+# ---------------------------------------------------------------------------
+# Secrets & runtime config — NEVER commit
+# ---------------------------------------------------------------------------
+# The encryption key. Anyone with this + connections.json can decrypt every
+# stored password. Treat as more sensitive than the passwords themselves.
+master.key
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Live broker config (contains password_enc blobs and host/user fields)
 connections.json
+connections.json.tmp
+
+# Environment files
+.env
+.env.*
+!.env.example
+secrets.json
+secrets.*.json
+
+# ---------------------------------------------------------------------------
+# Broker runtime artifacts
+# ---------------------------------------------------------------------------
 *.log
 service.out.log
 service.err.log
 service.log
 
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+wheels/
+pip-log.txt
+pip-delete-this-directory.txt
+
 # venvs
 .venv/
 venv/
+ENV/
+env/
 
-# Python cruft
-__pycache__/
-*.pyc
+# Embedded Python downloaded by deploy.ps1 (only relevant if someone unpacks
+# the deployed install dir into the repo; harmless to ignore preemptively)
+python313/
 
-# OS / editor
+# Test / type-check / coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ---------------------------------------------------------------------------
+# Node (in case marketplace tooling is added later)
+# ---------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------------------------------------------------------------------------
+# OS junk
+# ---------------------------------------------------------------------------
+# Windows
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
 .vscode/
 .idea/
+*.swp
+*.swo
+*.swn
+.*.sw?
+*.sublime-workspace
+*.sublime-project
+.history/
+
+# ---------------------------------------------------------------------------
+# Claude Code local settings (per-project hooks, allowlists, transcripts)
+# ---------------------------------------------------------------------------
+.claude/
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+*.bak
+*.tmp
+*.temp
+*.orig
