@@ -1,0 +1,39 @@
+{
+  "name": "sqlbroker",
+  "version": "2.8.0",
+  "description": "Alias-based MSSQL broker for Codex CLI. Cross-platform: Task Scheduler / systemd / launchd. Three auth modes: SQL / Windows Auth / Azure AD SPN. 14 MCP tools — schema introspection (list_objects, get_definition, get_table_schema, get_dependencies, find_in_definitions, find_in_columns, get_proc_params, compare_definitions), data (preview_table, execute_sql), runtime (get_server_info, get_active_queries, list_databases, list_aliases) — plus connection pool, master.key encryption.",
+  "author": {
+    "name": "pumipat"
+  },
+  "homepage": "https://github.com/creamac/sqlbroker-plugin",
+  "repository": "https://github.com/creamac/sqlbroker-plugin",
+  "license": "MIT",
+  "keywords": [
+    "mssql",
+    "sql-server",
+    "mcp",
+    "broker",
+    "encryption",
+    "cross-platform"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "SQL Broker",
+    "shortDescription": "Alias-based MSSQL access — credentials never enter the conversation.",
+    "longDescription": "A local broker holds your SQL Server passwords in an encrypted file (master.key + AES-128-CBC + HMAC-SHA256). Codex calls databases by alias only — host, user, and password never enter the conversation or transcript. One MCP server, unlimited aliases. 14 MCP tools cover schema introspection, runtime info, and policy-gated query execution (readonly / exec-only / full).",
+    "developerName": "Cream — Pumipat",
+    "category": "Database",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/creamac/sqlbroker-plugin",
+    "defaultPrompt": [
+      "list databases on prod_main",
+      "find procs matching _approve in billing_db on prod_main",
+      "show definition of usp_X on prod_main",
+      "compare definition of usp_X between staging_main and prod_main"
+    ],
+    "brandColor": "#1E40AF"
+  }
+}

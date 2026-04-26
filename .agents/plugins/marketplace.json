@@ -1,0 +1,22 @@
+{
+  "name": "sqlbroker-marketplace",
+  "interface": {
+    "displayName": "SQL Broker",
+    "shortDescription": "Alias-based MSSQL access for Codex CLI",
+    "developerName": "Cream — Pumipat"
+  },
+  "plugins": [
+    {
+      "name": "sqlbroker",
+      "source": {
+        "source": "local",
+        "path": "./plugins/sqlbroker"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Database"
+    }
+  ]
+}
