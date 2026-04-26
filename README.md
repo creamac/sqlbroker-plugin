@@ -66,23 +66,26 @@ Both CLIs read the same broker source under `plugins/sqlbroker/`. The manifests 
 
 ### 2) Install the local service
 
-**Claude Code:**
+The skill checks `curl http://127.0.0.1:8765/health` first. **If the broker is already running** (e.g. you installed via the other CLI on this same host), the skill skips the elevated deploy and just wires the missing MCP config — no UAC/sudo needed. **If not running**, it elevates and runs the OS-appropriate deploy script.
 
+**Claude Code:** `/sqlbroker:install` (UAC on Windows / sudo on Unix when broker not yet running)
+**Codex CLI:** `/sqlbroker-install` — Codex sandboxes typically can't elevate, so if the broker is NOT yet running, the skill prints the manual elevation command for you to run in your own terminal, then `codex mcp add` is called from inside the sandbox once the broker is up.
+
+| OS | What deploy installs |
+|---|---|
+| Windows | embedded Python 3.13, ODBC Driver 18, Scheduled Task `mcp-sqlbroker`, Claude/Codex MCP wiring |
+| macOS / Linux | venv + `pyodbc` + `pycryptodome`, launchd plist / systemd unit, MCP wiring |
+
+The deploy script supports flags `-AutoWire` / `--auto-wire` to skip the y/n prompt and `-Codex` / `--codex` to also patch `~/.codex/config.toml` in the same run.
+
+**If the broker is already up and you only need Codex wired**, the simplest one-liner (run in your own terminal — no admin needed):
+
+```bash
+codex mcp add sqlbroker -- D:\util\mcp-sqlbroker\run_stdio_proxy.bat   # Windows
+codex mcp add sqlbroker -- /opt/mcp-sqlbroker/run_stdio_proxy.sh       # Linux/macOS
 ```
-/sqlbroker:install
-```
 
-**Codex CLI:**
-
-```
-/sqlbroker-install
-```
-
-Either picks the right deploy script for your OS and runs it elevated.
-- **Windows** — UAC dialog → Yes. Embedded Python + ODBC + Scheduled Task all auto-installed.
-- **macOS / Linux** — `sudo` password. Uses your system `python3`, registers launchd plist or systemd unit.
-
-The script ends by patching `~/.claude.json` with the MCP wiring (auto-confirm with `-AutoWire` / `--auto-wire`). Add `-Codex` (Windows) or `--codex` (Unix) to also patch `~/.codex/config.toml` in the same run — useful if you use both CLIs.
+Codex's own CLI rewrites `~/.codex/config.toml`. Verify with `codex mcp list`.
 
 ### 3) Add your first connection
 

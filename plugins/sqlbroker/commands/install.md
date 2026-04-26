@@ -6,11 +6,20 @@ Install the mcp-sqlbroker service on this machine. Picks the right deploy
 script for the OS, runs it elevated (UAC on Windows / sudo on Unix), and
 patches the host's MCP config so the broker is auto-wired.
 
-> **Maintenance note:** the canonical version of this content lives at `plugins/sqlbroker/skills/sqlbroker-install/SKILL.md` (used by Codex CLI). Keep this file in sync when editing — Claude Code does not substitute `${CLAUDE_PLUGIN_ROOT}` in command bodies, so we cannot reference the skill file as a thin shim.
+> **Maintenance note:** mirrored at `plugins/sqlbroker/skills/sqlbroker-install/SKILL.md` (read by Codex CLI). Keep both files in sync.
 
-## Steps
+## Step 0 — fast-path check (ALWAYS DO THIS FIRST)
 
-1. Detect OS:
+Before launching any elevated installer, probe the broker's HTTP health endpoint:
+
+```powershell
+Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
+```
+
+If you get `{"ok":true,"server":"sqlbroker"}`, **the broker is already installed and running**. Skip to Step 6 — only wire `~/.claude.json` (no UAC needed). This is the common case when the user previously installed via Codex CLI or a manual deploy.
+
+## Step 1 — detect OS (only if Step 0 found no broker)
+
    - Windows → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.ps1`
    - macOS / Linux → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh`
 
@@ -49,9 +58,23 @@ patches the host's MCP config so the broker is auto-wired.
    Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
    ```
 
-5. The deploy output ends with a "Wire it into Claude Code / Codex" snippet. If `-AutoWire` / `--auto-wire` was used, the entry was already written. Otherwise tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`** (Claude Code) or **as `[mcp_servers.sqlbroker]` in `~/.codex/config.toml`** (Codex), then restart their CLI (or `/reload-plugins` may be enough for Claude Code).
+5. The deploy output ends with a "Wire it into Claude Code / Codex" snippet. If `-AutoWire` / `--auto-wire` was used, the entry was already written. Otherwise tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`** (Claude Code) or **as `[mcp_servers.sqlbroker]` in `~/.codex/config.toml`** (Codex), then `/reload-plugins` (Claude) or relaunch Codex.
 
-6. Once wired, suggest `/sqlbroker:add <alias>` to register the first DB connection.
+## Step 6 — wire `~/.claude.json` (entry point if Step 0 succeeded)
+
+If `-AutoWire` was used during a prior deploy, this is already done. Otherwise add manually:
+
+```json
+"mcpServers": {
+  "sqlbroker": { "command": "D:\\util\\mcp-sqlbroker\\run_stdio_proxy.bat", "args": [] }
+}
+```
+
+Then `/reload-plugins` (or restart Claude Code).
+
+## Step 7 — first connection
+
+Once wired, suggest `/sqlbroker:add <alias>` to register the first DB connection.
 
 ## Optional flags (Windows)
 
