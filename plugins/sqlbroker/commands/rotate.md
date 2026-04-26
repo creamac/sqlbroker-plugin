@@ -5,9 +5,11 @@ argument-hint: <alias_name>
 
 Rotate the password for alias `$ARGUMENTS` without re-entering host / user / db / policy.
 
+> **Maintenance note:** canonical content also at `plugins/sqlbroker/skills/sqlbroker-rotate/SKILL.md`. Keep in sync.
+
 ## Flow
 
-1. If `$ARGUMENTS` is empty, ask the user which alias to rotate (you can show `mcp__plugin_sqlbroker_sqlbroker__list_aliases` first).
+1. If `$ARGUMENTS` is empty, ask the user which alias to rotate (you can show `mcp__sqlbroker__list_aliases` first).
 
 2. Verify the alias exists by calling `list_aliases` and checking it's in the list.
 

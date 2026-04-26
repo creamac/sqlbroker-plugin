@@ -3,15 +3,17 @@ description: Add a new MSSQL connection alias (interactive)
 argument-hint: [alias_name]
 ---
 
-Add a new MSSQL connection alias to mcp-sqlbroker. Args: $ARGUMENTS.
+Add a new MSSQL connection alias to mcp-sqlbroker. Args: `$ARGUMENTS`.
 
-## Flow (collect non-secrets in Claude, password in user's terminal)
+> **Maintenance note:** canonical content also at `plugins/sqlbroker/skills/sqlbroker-add/SKILL.md`. Keep in sync.
+
+## Flow (collect non-secrets in chat, password in user's terminal)
 
 1. **Alias name** — if `$ARGUMENTS` is empty, ask the user (short, snake_case: `prod_main`, `staging_db`).
 
 2. **Auth mode** — use `AskUserQuestion` with these options:
    - `SQL login (Recommended)` — username + password (most common)
-   - `Windows Authentication` — Trusted_Connection; broker process identity is used. **Warn:** the broker runs as SYSTEM by default — only works for local SQL Server unless deploy.ps1 was given `-ServiceUser/-ServicePassword` to run as a domain account.
+   - `Windows Authentication` — Trusted_Connection; broker process identity is used. **Warn:** the broker runs as SYSTEM by default — only works for local SQL Server unless `deploy.ps1` was given `-ServiceUser/-ServicePassword` to run as a domain account.
    - `Azure AD service principal` — for Azure SQL DB / Managed Instance; needs ODBC 18+, client_id + client_secret.
 
 3. **Host** — chat free-text. Examples:

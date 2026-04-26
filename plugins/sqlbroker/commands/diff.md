@@ -5,6 +5,8 @@ argument-hint: <alias_a> <alias_b> <object_name>
 
 Compare the CREATE statement of an object on two different environments. Args: `$ARGUMENTS` — expected `<alias_a> <alias_b> <object_name>` (3 tokens).
 
+> **Maintenance note:** canonical content also at `plugins/sqlbroker/skills/sqlbroker-diff/SKILL.md`. Keep in sync.
+
 ## Steps
 
 1. Parse `$ARGUMENTS` into three tokens. If fewer, ask the user for the missing pieces:
@@ -17,7 +19,7 @@ Compare the CREATE statement of an object on two different environments. Args: `
 3. Call the MCP tool:
 
    ```
-   mcp__plugin_sqlbroker_sqlbroker__compare_definitions(
+   mcp__sqlbroker__compare_definitions(
        alias_a=<alias_a>, alias_b=<alias_b>, object_name=<object_name>,
        database_a=<optional>, database_b=<optional>
    )
@@ -37,5 +39,5 @@ Compare the CREATE statement of an object on two different environments. Args: `
 ## Notes
 
 - The diff is computed on the broker side using Python's `difflib.unified_diff`.
-- Both aliases must be reachable when this runs (otherwise the tool returns `definition_a_present` / `definition_b_present` flags).
+- Both aliases must be reachable when this runs.
 - Encrypted procs (sp_helptext returning NULL) show as missing — same as `get_definition`.

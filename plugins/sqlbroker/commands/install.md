@@ -4,7 +4,9 @@ description: Install the mcp-sqlbroker service (Windows / macOS / Linux)
 
 Install the mcp-sqlbroker service on this machine. Picks the right deploy
 script for the OS, runs it elevated (UAC on Windows / sudo on Unix), and
-prints the MCP wiring snippet for the user to paste into `~/.claude.json`.
+patches the host's MCP config so the broker is auto-wired.
+
+> **Maintenance note:** the canonical version of this content lives at `plugins/sqlbroker/skills/sqlbroker-install/SKILL.md` (used by Codex CLI). Keep this file in sync when editing — Claude Code does not substitute `${CLAUDE_PLUGIN_ROOT}` in command bodies, so we cannot reference the skill file as a thin shim.
 
 ## Steps
 
@@ -23,6 +25,8 @@ prints the MCP wiring snippet for the user to paste into `~/.claude.json`.
    )
    ```
 
+   Add `-Codex` to also patch `~/.codex/config.toml`. Add `-AutoWire` to skip the `~/.claude.json` confirmation prompt.
+
    The script registers a Scheduled Task named `mcp-sqlbroker` (no NSSM).
 
 3. **macOS / Linux path:**
@@ -33,50 +37,31 @@ prints the MCP wiring snippet for the user to paste into `~/.claude.json`.
    sudo "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh"
    ```
 
-   The script writes either a systemd unit (`/etc/systemd/system/mcp-sqlbroker.service`) or a launchd plist (`/Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist`).
+   Add `--codex` to also patch `~/.codex/config.toml`. Add `--auto-wire` to skip the `~/.claude.json` confirmation prompt.
 
 4. After the user reports the deploy window/output finished, run a health check:
 
    ```bash
-   curl -fsS http://127.0.0.1:8765/health    # Unix
+   curl -fsS http://127.0.0.1:8765/health
    ```
 
    ```powershell
    Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
    ```
 
-5. The deploy output ends with an "Wire it into Claude Code" snippet. Tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`**, then restart Claude Code (or `/reload-plugins` may be enough).
+5. The deploy output ends with a "Wire it into Claude Code / Codex" snippet. If `-AutoWire` / `--auto-wire` was used, the entry was already written. Otherwise tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`** (Claude Code) or **as `[mcp_servers.sqlbroker]` in `~/.codex/config.toml`** (Codex), then restart their CLI (or `/reload-plugins` may be enough for Claude Code).
 
 6. Once wired, suggest `/sqlbroker:add <alias>` to register the first DB connection.
 
-## What the deploy script does (zero prerequisites on Windows)
-
-**Windows (`deploy.ps1`):**
-- Downloads Python 3.13 embeddable into `<InstallDir>\python313\` — no system Python install required.
-- Auto-installs ODBC Driver 18 for SQL Server if missing.
-- Registers a Scheduled Task running as SYSTEM at boot, auto-restart on failure.
-
-**Linux (`deploy.sh`):**
-- Uses system `python3` (apt/yum/dnf must have it).
-- Creates a venv, installs `pyodbc` + `keyring`.
-- Hints at ODBC Driver 18 install (Microsoft repo apt/yum) if missing.
-- Writes systemd unit, enables, starts.
-
-**macOS (`deploy.sh`):**
-- Uses system `python3` (Homebrew or python.org).
-- Creates a venv, installs `pyodbc` + `keyring`.
-- Hints at `brew install msodbcsql18` if missing.
-- Writes a LaunchDaemon plist, loads via `launchctl`.
-
 ## Optional flags (Windows)
 
-`-InstallDir`, `-Port`, `-BindHost`, `-SkipOdbc`, `-SkipService`. Pass them to `deploy.ps1` in the elevated window.
+`-InstallDir`, `-Port`, `-BindHost`, `-SkipOdbc`, `-SkipService`, `-AutoWire`, `-SkipMcpWire`, `-RefreshOnly`, `-Codex`. Pass them to `deploy.ps1` in the elevated window.
 
 ## Optional env vars (Unix)
 
-`INSTALL_DIR`, `PORT`, `BIND_HOST`, `SERVICE_NAME`. Set them before invoking `sudo deploy.sh`.
+`INSTALL_DIR`, `PORT`, `BIND_HOST`, `SERVICE_NAME`. Set them before invoking `sudo deploy.sh`. Flags: `--auto-wire`, `--skip-mcp-wire`, `--refresh-only`, `--codex`.
 
 ## Notes
 
 - The deploy scripts do NOT touch existing `connections.json`, so re-running is safe.
-- Passwords are stored in the OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service) — they are NOT in `connections.json`.
+- Passwords are AES-128-CBC + HMAC-SHA256 encrypted with `master.key` (32 random bytes generated at install). They are NOT in `connections.json` plaintext.

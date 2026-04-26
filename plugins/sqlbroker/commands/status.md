@@ -4,6 +4,8 @@ description: Check mcp-sqlbroker service health and configured aliases
 
 Run a 3-step health check for mcp-sqlbroker. Detect OS first; the service backend differs.
 
+> **Maintenance note:** canonical content also at `plugins/sqlbroker/skills/sqlbroker-status/SKILL.md`. Keep in sync.
+
 ## Steps
 
 1. **Service status** — depends on OS:
@@ -23,7 +25,6 @@ Run a 3-step health check for mcp-sqlbroker. Detect OS first; the service backen
    curl -fsS -X POST http://127.0.0.1:8765/mcp -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
    ```
-   Expected `result.serverInfo.version` = current plugin version (e.g. `2.7.1`).
 
 3. **Configured aliases** — prefer the MCP tool when wired:
    - `mcp__sqlbroker__list_aliases()` (no args)
@@ -38,8 +39,6 @@ Report all 3 steps to the user. If anything fails, propose a fix:
 | Task `Disabled` / `Ready` (Windows) | Admin shell → `Start-ScheduledTask -TaskName mcp-sqlbroker` |
 | systemd `inactive` / `failed` | `sudo systemctl restart mcp-sqlbroker`; check `journalctl -u mcp-sqlbroker -n 50` |
 | launchd plist not loaded | `sudo launchctl load /Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist` |
-| Health unreachable | Tail `<InstallDir>/service.log` (and `service.err.log` if it exists) |
-| Broker version mismatches plugin version | Run `/sqlbroker:update` to refresh server.py + manage_conn.py and bounce the service |
+| Health unreachable | Tail `<InstallDir>/service.log` |
+| Broker version mismatches plugin version | Run `/sqlbroker:update` to refresh `server.py` and bounce the service |
 | `master.key did not match (HMAC mismatch)` | Someone replaced master.key. Restore from backup or re-add aliases. |
-| `No encrypted password for alias '<name>'` | v2.0–2.2 keyring migration didn't complete. Run `manage_conn.py migrate` (admin/sudo) or `/sqlbroker:add <alias> --force` to re-add. |
-| Aliases call returns `permission_denied: VIEW SERVER STATE` (only `get_active_queries`) | Grant `VIEW SERVER STATE` to the alias's SQL login, or use a privileged alias for that one tool. |
