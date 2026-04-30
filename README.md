@@ -66,16 +66,22 @@ Both CLIs read the same broker source under `plugins/sqlbroker/`. The manifests 
 
 ### 2) Install the local service
 
-The skill checks `curl http://127.0.0.1:8765/health` first. **If the broker is already running** (e.g. you installed via the other CLI on this same host), the skill skips the elevated deploy and just wires the missing MCP config — no UAC/sudo needed. **If not running**, it elevates and runs the OS-appropriate deploy script.
+> **Required step on first install.** Don't skip this — Quickstart Step 3 below assumes the broker process is up and `manage_conn.py` is deployed under `D:\util\mcp-sqlbroker\` (Windows) / `/opt/mcp-sqlbroker/` (Unix). If you try to run `manage_conn.py` before this step, you'll get `ModuleNotFoundError: No module named 'server'`.
 
-**Claude Code:** type `/sqlbroker:install` (UAC on Windows / sudo on Unix when broker not yet running). Claude exposes plugin commands as slash invocations.
+**Claude Code (recommended):** type
+```
+/sqlbroker:install
+```
+(UAC prompts on Windows / sudo prompts on Unix when the broker isn't running yet). The skill auto-checks `curl http://127.0.0.1:8765/health` first — **if the broker is already running** (e.g. you installed via the other CLI on this same host), it skips the elevated deploy and just wires the missing MCP config. **If not running**, it pops an `AskUserQuestion` for the install location (laptops with no D: drive can pick `%USERPROFILE%\mcp-sqlbroker` or `C:\opt\mcp-sqlbroker`), then elevates and runs the OS-appropriate deploy script.
 
 **Codex CLI:** Codex does **not** expose plugin skills as slash commands — `/sqlbroker-install` returns "Unrecognized command". Instead, ask the agent in plain language: `"install sqlbroker"` or `"set up sqlbroker on this machine"`. The Codex agent will pick up the `sqlbroker-install` skill and follow it. Since Codex sandboxes typically can't elevate themselves, the agent will print the manual elevation command for you to run in your own terminal, then call `codex mcp add` from inside the sandbox once the broker is up.
 
-| OS | What deploy installs |
-|---|---|
-| Windows | embedded Python 3.13, ODBC Driver 18, Scheduled Task `mcp-sqlbroker`, Claude/Codex MCP wiring |
-| macOS / Linux | venv + `pyodbc` + `pycryptodome`, launchd plist / systemd unit, MCP wiring |
+| OS | What deploy installs | Default install dir |
+|---|---|---|
+| Windows | embedded Python 3.13, ODBC Driver 18, Scheduled Task `mcp-sqlbroker`, Claude/Codex MCP wiring | `D:\util\mcp-sqlbroker` |
+| macOS / Linux | venv + `pyodbc` + `pycryptodome`, launchd plist / systemd unit, MCP wiring | `/opt/mcp-sqlbroker` |
+
+**Custom install location:** the install dir is fully configurable. The skill will ask you on first install. To override manually, pass `-InstallDir 'C:\path\to\anywhere'` to `deploy.ps1` or `INSTALL_DIR=/path/to/anywhere sudo ./deploy.sh`. Once installed, the broker exposes the chosen path on `/health` so future skill invocations (update, status, fast-path Codex wiring) auto-detect it without hardcoding.
 
 The deploy script supports flags `-AutoWire` / `--auto-wire` to skip the y/n prompt and `-Codex` / `--codex` to also patch `~/.codex/config.toml` in the same run.
 
