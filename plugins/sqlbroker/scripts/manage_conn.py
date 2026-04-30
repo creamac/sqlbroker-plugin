@@ -16,6 +16,15 @@ import json
 import os
 import sys
 
+# Embedded Python on Windows ships with `python313._pth` that disables the
+# default "script's directory on sys.path" behavior, so `from server import ...`
+# fails when this script is invoked by absolute path from a different cwd
+# (e.g. `python.exe D:\util\mcp-sqlbroker\manage_conn.py`). Insert our own dir
+# first so the import always resolves regardless of how the user invokes us.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 from server import (
     CONFIG_PATH,
     delete_password,
