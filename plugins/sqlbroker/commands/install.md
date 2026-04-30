@@ -8,83 +8,83 @@ patches the host's MCP config so the broker is auto-wired.
 
 > **Maintenance note:** mirrored at `plugins/sqlbroker/skills/sqlbroker-install/SKILL.md` (read by Codex CLI). Keep both files in sync.
 
-## Step 0 — fast-path check (ALWAYS DO THIS FIRST)
+## Step 1 — ALWAYS ask the user where to install (FIRST THING)
 
-Before launching any elevated installer, probe the broker's HTTP health endpoint:
+**Always pop this question first**, even before probing the broker. Reason: the user may have a previous install at the default location but want to move it, or may want to confirm the location explicitly. The `/health` probe in Step 2 then *responds* to their choice rather than silently bypassing it.
+
+Use **`AskUserQuestion`** with header `Install location?`:
+
+- Windows options:
+  - `Auto-detect existing install` (recommended — uses whatever path the running broker reports via /health)
+  - `D:\util\mcp-sqlbroker` (default for hosts with a D: drive)
+  - `C:\opt\mcp-sqlbroker` (Linux-style, no D: required)
+  - `C:\Program Files\mcp-sqlbroker` (system-wide)
+  - `%USERPROFILE%\mcp-sqlbroker` (per-user, common on laptops without D:)
+  - `Other (custom path)`
+- Unix options:
+  - `Auto-detect existing install` (recommended)
+  - `/opt/mcp-sqlbroker` (default)
+  - `/usr/local/mcp-sqlbroker`
+  - `~/.local/mcp-sqlbroker` (per-user)
+  - `Other (custom path)`
+
+If they pick `Other`, ask in a follow-up free-text question for the absolute path. Prefer paths without spaces on Windows. Capture the chosen value as `$installDir` (or the literal `auto-detect`).
+
+## Step 2 — probe `/health` and reconcile with the chosen path
 
 ```powershell
 Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
 ```
 
-If you get a JSON response with `"ok":true`, **the broker is already installed and running**. On v2.8.2+ the response also includes `install_dir` and `version` — capture those. Skip directly to Step 6 (only wire `~/.claude.json`, no UAC needed). This is the common case when the user previously installed via Codex CLI or a manual deploy.
+Then reconcile the user's choice from Step 1 with what `/health` reports:
 
-## Step 0.5 — ask the user where to install (ONLY if Step 0 found nothing)
+| User picked | /health says | Action |
+|---|---|---|
+| `Auto-detect` | broker reachable | `$installDir` ← `install_dir` from response. **Go to Step 4 (wire MCP only).** |
+| `Auto-detect` | broker not reachable | Fall back to `D:\util\mcp-sqlbroker`. **Go to Step 3 (elevated deploy).** |
+| Specific path X | broker reachable, install_dir = X | Same path → user wants a refresh. **Go to Step 3 with `-RefreshOnly` added.** |
+| Specific path X | broker reachable, install_dir = Y (≠ X) | ⚠️ **Conflict.** Tell the user: "Existing broker at Y. Installing a second one at X would conflict on port 8765. Either pick Y above, OR uninstall the existing one first (`Unregister-ScheduledTask mcp-sqlbroker -Confirm:$false; Remove-Item -Recurse Y`)." Ask them to re-run with a corrected choice. **Stop.** |
+| Specific path X | broker not reachable | Fresh install at X. **Go to Step 3 (elevated deploy).** |
 
-Use **`AskUserQuestion`** with header `Install location?` and these option labels:
+For older brokers (< 2.8.2) that don't return `install_dir`, scan common paths until one contains `run_stdio_proxy.bat`: `D:\util\mcp-sqlbroker`, `C:\util\mcp-sqlbroker`, `C:\opt\mcp-sqlbroker`, `C:\apps\mcp-sqlbroker`, `%USERPROFILE%\mcp-sqlbroker`.
 
-- Windows: `D:\util\mcp-sqlbroker` (recommended — D: drive), `C:\opt\mcp-sqlbroker` (Linux-style), `C:\Program Files\mcp-sqlbroker` (system-wide), `%USERPROFILE%\mcp-sqlbroker` (per-user, laptops with no D:), `Other (custom path)`
-- Unix: `/opt/mcp-sqlbroker` (recommended), `/usr/local/mcp-sqlbroker`, `~/.local/mcp-sqlbroker` (per-user), `Other (custom path)`
+## Step 3 — elevated deploy (only when Step 2 says "deploy")
 
-If they pick `Other`, ask a follow-up free-text question for the absolute path. Prefer paths without spaces on Windows. Capture the chosen path as `$installDir` and pass it through to deploy via `-InstallDir`. **Don't proceed without explicit user confirmation — install path is sticky once the scheduled task is registered.**
-
-## Step 1 — detect OS
-
-   - Windows → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.ps1`
-   - macOS / Linux → use `${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh`
-
-2. **Windows path:**
-
-   Tell the user a UAC dialog will pop up. Then launch the elevated PowerShell window — pass `-InstallDir` with the path captured in Step 0.5:
-
-   ```powershell
-   $deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
-   $installDir = '<chosen path from Step 0.5, or D:\util\mcp-sqlbroker>'
-   Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-     '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-     '-File', $deploy,
-     '-InstallDir', $installDir
-   )
-   ```
-
-   Add `-Codex` to also patch `~/.codex/config.toml`. Add `-AutoWire` to skip the `~/.claude.json` confirmation prompt.
-
-   The script registers a Scheduled Task named `mcp-sqlbroker` (no NSSM).
-
-3. **macOS / Linux path:**
-
-   Tell the user `sudo` will be required. Pass `INSTALL_DIR=` if Step 0.5 chose a non-default path:
-
-   ```bash
-   sudo INSTALL_DIR='<chosen path or /opt/mcp-sqlbroker>' "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh"
-   ```
-
-   Add `--codex` to also patch `~/.codex/config.toml`. Add `--auto-wire` to skip the `~/.claude.json` confirmation prompt.
-
-4. After the user reports the deploy window/output finished, run a health check:
-
-   ```bash
-   curl -fsS http://127.0.0.1:8765/health
-   ```
-
-   ```powershell
-   Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
-   ```
-
-5. The deploy output ends with a "Wire it into Claude Code / Codex" snippet. If `-AutoWire` / `--auto-wire` was used, the entry was already written. Otherwise tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`** (Claude Code) or **as `[mcp_servers.sqlbroker]` in `~/.codex/config.toml`** (Codex), then `/reload-plugins` (Claude) or relaunch Codex.
-
-## Step 6 — wire `~/.claude.json` (entry point if Step 0 succeeded)
-
-If `-AutoWire` was used during a prior deploy, this is already done. Otherwise:
-
-**First, detect the actual install dir from `/health`** (don't assume the default):
+Tell the user a UAC dialog will pop up. Then launch the elevated PowerShell window — pass `-InstallDir` with the value from Step 2:
 
 ```powershell
-(Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing).Content | ConvertFrom-Json | Select-Object -Expand install_dir
+$deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
+$installDir = '<value from Step 2>'
+Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+  '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+  '-File', $deploy,
+  '-InstallDir', $installDir
+)
 ```
 
-Older brokers (< 2.8.2) don't return `install_dir`; in that case, scan common paths until one contains `run_stdio_proxy.bat`: `D:\util\mcp-sqlbroker`, `C:\util\mcp-sqlbroker`, `C:\opt\mcp-sqlbroker`, `C:\apps\mcp-sqlbroker`, `%USERPROFILE%\mcp-sqlbroker`.
+Add `-Codex` to also patch `~/.codex/config.toml`. Add `-AutoWire` to skip the `~/.claude.json` confirmation prompt. Add `-RefreshOnly` if Step 2 detected a same-path refresh (skips Python/ODBC re-install, just bounces the scheduled task).
 
-Then add to `~/.claude.json` (replace `<install_dir>` with the path you got):
+The script registers a Scheduled Task named `mcp-sqlbroker` (no NSSM).
+
+For Linux/macOS:
+
+```bash
+sudo INSTALL_DIR='<value from Step 2>' "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh"
+```
+
+Add `--codex` / `--auto-wire` / `--refresh-only` as needed.
+
+After the user reports the deploy window/output finished, run a health check:
+
+```powershell
+Invoke-WebRequest 'http://127.0.0.1:8765/health' -UseBasicParsing | Select-Object -Expand Content
+```
+
+The deploy output ends with a "Wire it into Claude Code / Codex" snippet. If `-AutoWire` / `--auto-wire` was used, the entry was already written. Otherwise tell the user to **paste that snippet under `mcpServers` in `~/.claude.json`** (Claude Code), then `/reload-plugins`.
+
+## Step 4 — wire `~/.claude.json` (entry point when Step 2 says "skip deploy")
+
+If `-AutoWire` was used during a prior deploy, this is already done. Otherwise add to `~/.claude.json` (replace `<install_dir>` with the path from Step 2):
 
 ```json
 "mcpServers": {
@@ -94,7 +94,7 @@ Then add to `~/.claude.json` (replace `<install_dir>` with the path you got):
 
 Then `/reload-plugins` (or restart Claude Code).
 
-## Step 7 — first connection
+## Step 5 — first connection
 
 Once wired, suggest `/sqlbroker:add <alias>` to register the first DB connection.
 
