@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.8.1"
+SERVER_VERSION = "2.8.2"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -1311,7 +1311,15 @@ class MCPHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/health"):
-            body = b'{"ok":true,"server":"sqlbroker"}'
+            # Surface install_dir + version so skills can detect where the
+            # broker is deployed without scanning common paths. Backward-compat:
+            # old clients only checked `ok` and `server`.
+            body = json.dumps({
+                "ok": True,
+                "server": "sqlbroker",
+                "version": SERVER_VERSION,
+                "install_dir": HERE,
+            }).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
