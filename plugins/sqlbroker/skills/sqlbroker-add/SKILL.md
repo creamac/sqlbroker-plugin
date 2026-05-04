@@ -26,6 +26,8 @@ Add a new MSSQL connection alias to mcp-sqlbroker. The alias name comes from `$A
 
 5. **default_database** — chat (optional, blank to skip). **Policy** — `AskUserQuestion`: `readonly (Recommended)` / `exec-only` / `full`.
 
+5b. **Charset (optional, default `cp874`)** — codepage for legacy ANSI VARCHAR/CHAR columns. The default `cp874` covers Thai_CI_AS (TIS-620) which is the common case in TH environments. Only ask if the target server's default collation is non-Thai (e.g. `Latin1_General_CI_AS` → use `cp1252`, Japanese → `cp932`). NVARCHAR is unaffected by this setting (always UTF-16). If unsure, accept the default — wrong charset shows up as `?` or mojibake on Thai data and is a one-flag fix.
+
 6. **Password** — DO NOT collect via chat. Print the command for the user to run in their own terminal — `manage_conn.py` prompts for password via `getpass` (hidden input):
 
    **SQL login:**
