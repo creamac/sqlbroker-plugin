@@ -99,6 +99,10 @@ def cmd_add(args):
         "ODBC Driver 18 for SQL Server" if auth_mode == "aad-spn"
         else "ODBC Driver 17 for SQL Server"
     )
+    # SQL_CHAR codepage for legacy ANSI VARCHAR/CHAR columns. cp874 is the
+    # right default for Thai_CI_AS environments (TIS-620). Override only when
+    # the target server's default collation is non-Thai.
+    charset = args.charset or "cp874"
 
     entry = {
         "host": host,
@@ -106,6 +110,7 @@ def cmd_add(args):
         "default_database": db,
         "policy": policy,
         "driver": driver,
+        "charset": charset,
     }
     if user:
         entry["user"] = user
@@ -135,12 +140,12 @@ def cmd_list(_args):
     if not cfg["connections"]:
         print("(no connections configured)")
         return
-    print(f"{'alias':25}  {'host':35}  {'user':15}  {'policy':10}  {'default_db'}")
-    print("-" * 110)
+    print(f"{'alias':25}  {'host':35}  {'user':15}  {'policy':10}  {'charset':8}  {'default_db'}")
+    print("-" * 120)
     for alias, c in cfg["connections"].items():
         print(
-            f"{alias:25}  {c['host']:35}  {c['user']:15}  "
-            f"{c['policy']:10}  {c.get('default_database', '')}"
+            f"{alias:25}  {c['host']:35}  {c.get('user', ''):15}  "
+            f"{c['policy']:10}  {c.get('charset', 'cp874'):8}  {c.get('default_database', '')}"
         )
 
 
@@ -230,6 +235,12 @@ def main():
     a.add_argument("--database")
     a.add_argument("--policy", choices=["readonly", "full", "exec-only"])
     a.add_argument("--driver")
+    a.add_argument(
+        "--charset",
+        help="SQL_CHAR codepage for legacy ANSI VARCHAR/CHAR columns. "
+             "Default: cp874 (Thai_CI_AS / TIS-620). Override for non-Thai "
+             "environments (e.g. cp1252 for Western Europe, cp932 for Japanese, utf-8).",
+    )
     a.add_argument(
         "--auth-mode",
         dest="auth_mode",
