@@ -38,6 +38,16 @@ def _write(obj):
 
 
 def main():
+    # Force stdin/stdout to UTF-8 — Windows defaults to cp1252 which breaks
+    # JSON responses containing Thai (or any non-Latin) data with
+    # UnicodeEncodeError. The MCP wire format is JSON which is always UTF-8.
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        # Python < 3.7 fallback (shouldn't happen on the embedded 3.13 we ship)
+        pass
+
     # Emit a readiness signal on stderr — some MCP clients (e.g. Codex CLI 0.125+)
     # appear to wait for stderr activity before sending the first request, mirroring
     # what mssql-mcp does ("Server ready."). Harmless for clients that don't watch.
