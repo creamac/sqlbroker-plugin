@@ -139,7 +139,7 @@ command = "cmd"
 args = ["/c", "npx.cmd", "-y", "mssql-mcp@2.3.2"]
 
 [mcp_servers.mssql.env]
-DB_PASSWORD = "Hunter2!"   # 😱 plaintext, world-readable on most setups
+DB_PASSWORD = "Hunter2!"        # 😱 plaintext, world-readable on most setups
 DB_SERVER = "10.0.0.5,1433"
 DB_USER = "appuser"
 ```
