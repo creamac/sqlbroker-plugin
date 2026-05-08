@@ -25,14 +25,26 @@ AUTO_WIRE=0
 SKIP_MCP_WIRE=0
 REFRESH_ONLY=0
 CODEX=0
+PORTABLE=0
 for arg in "$@"; do
   case "$arg" in
     --auto-wire)     AUTO_WIRE=1 ;;
     --skip-mcp-wire) SKIP_MCP_WIRE=1 ;;
     --refresh-only)  REFRESH_ONLY=1 ;;
     --codex)         CODEX=1 ;;
+    --portable)      PORTABLE=1 ;;
   esac
 done
+
+# --portable implies --auto-wire and a per-user install. The default
+# INSTALL_DIR for portable is ~/.local/mcp-sqlbroker (user-owned), unless
+# the caller already overrode INSTALL_DIR via the env var.
+if [[ "$PORTABLE" -eq 1 ]]; then
+  AUTO_WIRE=1
+  if [[ -z "${INSTALL_DIR_OVERRIDDEN:-}" ]] && [[ "$INSTALL_DIR" == "/opt/mcp-sqlbroker" ]]; then
+    INSTALL_DIR="$HOME/.local/mcp-sqlbroker"
+  fi
+fi
 
 ok()   { printf '\033[32m[+]\033[0m %s\n' "$*"; }
 info() { printf '\033[36m[*]\033[0m %s\n' "$*"; }
@@ -45,9 +57,12 @@ case "$OS" in
   *) fail "Unsupported OS: $OS" ;;
 esac
 
-# 0) Root check (only if registering a service)
-if [[ "${1:-}" != "--skip-service" ]] && [[ "$EUID" -ne 0 ]]; then
-  fail "Run with sudo. Service registration needs root."
+# 0) Root check (only if registering a system service)
+if [[ "$PORTABLE" -eq 0 ]] && [[ "${1:-}" != "--skip-service" ]] && [[ "$EUID" -ne 0 ]]; then
+  fail "Run with sudo. Service registration needs root. (Pass --portable for a user-mode install with no sudo.)"
+fi
+if [[ "$PORTABLE" -eq 1 ]] && [[ "$EUID" -eq 0 ]]; then
+  fail "--portable installs into your user home — don't run it with sudo (run as the target user instead)."
 fi
 
 # 1) Python
@@ -142,7 +157,93 @@ if [[ "${1:-}" == "--skip-service" ]]; then
 fi
 
 # 5) Service registration
-if [[ "$OS" == "Linux" ]]; then
+if [[ "$PORTABLE" -eq 1 ]]; then
+  # Portable / user-mode autostart — no sudo, no system service.
+  # Linux:  ~/.config/systemd/user/mcp-sqlbroker.service  (systemctl --user)
+  # macOS:  ~/Library/LaunchAgents/com.creamac.mcp-sqlbroker.plist (launchctl)
+  # Both auto-start on user login. Broker stops when user logs out.
+
+  # start-broker helper that user can run manually too
+  START_SH="$INSTALL_DIR/start-broker.sh"
+  cat > "$START_SH" <<EOF
+#!/usr/bin/env bash
+export MCP_SQL_HOST="${BIND_HOST}"
+export MCP_SQL_PORT="${PORT}"
+export MCP_SQL_CONFIG="${INSTALL_DIR}/connections.json"
+export MCP_SQL_LOG="${INSTALL_DIR}/service.log"
+exec "${VENV_PY}" "${INSTALL_DIR}/server.py"
+EOF
+  chmod +x "$START_SH"
+  ok "start-broker.sh written"
+
+  if [[ "$OS" == "Linux" ]]; then
+    if ! command -v systemctl >/dev/null 2>&1; then
+      warn "systemctl not found — skipping autostart registration. Run $START_SH manually after each login."
+    else
+      UNIT_DIR="$HOME/.config/systemd/user"
+      mkdir -p "$UNIT_DIR"
+      UNIT_PATH="$UNIT_DIR/${SERVICE_NAME}.service"
+      cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=MCP SQL Broker (portable, user-mode)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=${VENV_PY} ${INSTALL_DIR}/server.py
+WorkingDirectory=${INSTALL_DIR}
+Environment=MCP_SQL_HOST=${BIND_HOST}
+Environment=MCP_SQL_PORT=${PORT}
+Environment=MCP_SQL_CONFIG=${INSTALL_DIR}/connections.json
+Environment=MCP_SQL_LOG=${INSTALL_DIR}/service.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$SERVICE_NAME"
+      ok "user systemd unit registered at $UNIT_PATH (auto-starts on user login)"
+      info "Note: broker stops when you log out. To keep running across logout, ask an admin to run: loginctl enable-linger $USER"
+    fi
+  elif [[ "$OS" == "Darwin" ]]; then
+    AGENT_DIR="$HOME/Library/LaunchAgents"
+    mkdir -p "$AGENT_DIR"
+    PLIST_PATH="$AGENT_DIR/com.creamac.${SERVICE_NAME}.plist"
+    cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.creamac.${SERVICE_NAME}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${VENV_PY}</string>
+    <string>${INSTALL_DIR}/server.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>${INSTALL_DIR}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MCP_SQL_HOST</key><string>${BIND_HOST}</string>
+    <key>MCP_SQL_PORT</key><string>${PORT}</string>
+    <key>MCP_SQL_CONFIG</key><string>${INSTALL_DIR}/connections.json</string>
+    <key>MCP_SQL_LOG</key><string>${INSTALL_DIR}/service.log</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${INSTALL_DIR}/service.out.log</string>
+  <key>StandardErrorPath</key><string>${INSTALL_DIR}/service.err.log</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    launchctl load "$PLIST_PATH"
+    ok "user launchd agent registered at $PLIST_PATH (auto-starts on user login)"
+  fi
+
+elif [[ "$OS" == "Linux" ]]; then
   UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
   cat > "$UNIT_PATH" <<EOF
 [Unit]

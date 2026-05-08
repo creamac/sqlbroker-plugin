@@ -70,7 +70,9 @@ If user picks `Quick`, **go to Step 3a**. If `Service`, **go to Step 3b**.
 
 If Step 2 detected a same-path refresh, skip this question and go directly to **Step 3b with `-RefreshOnly`** (refresh always uses the same mode the install was created in — admin needed only if it was a service install).
 
-## Step 3a — Quick portable deploy (no UAC, recommended)
+## Step 3a — Quick portable deploy (no UAC / no sudo, recommended)
+
+**Windows:**
 
 ```powershell
 $deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
@@ -78,24 +80,45 @@ $installDir = '<value from Step 2>'
 & $deploy -InstallDir $installDir -Portable
 ```
 
-Note: **no `Start-Process -Verb RunAs`** — runs in the current shell as the current user. The `-Portable` flag implies `-SkipService -SkipOdbc -AutoWire`. Add `-Codex` to also patch `~/.codex/config.toml` in the same call.
+No `Start-Process -Verb RunAs` — runs in the current shell as the current user. `-Portable` implies `-SkipService -SkipOdbc -AutoWire`. Add `-Codex` to also patch `~/.codex/config.toml` in the same call.
 
-What this does:
-1. Downloads embedded Python 3.13 (~10 MB) into `$installDir\python313\`
-2. Pip-installs `pyodbc` + `pycryptodome` into that embedded Python
-3. Copies `server.py`, `manage_conn.py`, `stdio_proxy.py`, `run_stdio_proxy.bat` to `$installDir`
-4. Generates `master.key` (32 random bytes)
-5. Writes `start-broker.bat` + drops a `.lnk` into the user's Startup folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\mcp-sqlbroker.lnk`) so the broker auto-starts on next logon
-6. Launches the broker right now (hidden window) so the user can use it immediately
-7. Wires `~/.claude.json` (and optionally `~/.codex/config.toml` with `-Codex`)
+**macOS / Linux:**
 
-**ODBC Driver pre-flight (Quick mode skips auto-install):** before running the deploy, check that `ODBC Driver 17 for SQL Server` or `ODBC Driver 18 for SQL Server` is already on the system:
+```bash
+INSTALL_DIR='<value from Step 2 — e.g. ~/.local/mcp-sqlbroker>' \
+  "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh" --portable
+```
+
+No `sudo` — runs as the current user. `--portable` implies `--auto-wire` and defaults `INSTALL_DIR` to `~/.local/mcp-sqlbroker` if you don't set it. Add `--codex` to also patch `~/.codex/config.toml`.
+
+**What this does (all OS):**
+1. Bootstraps Python (Windows: downloads embedded 3.13; Unix: uses system `python3` + venv)
+2. Pip-installs `pyodbc` + `pycryptodome`
+3. Copies broker source files to `$installDir`
+4. Generates `master.key` (lazy, on first password write)
+5. Writes a `start-broker.bat` (Win) / `start-broker.sh` (Unix) helper
+6. Registers a per-user autostart so the broker comes back on next login:
+   - Windows: `.lnk` in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\mcp-sqlbroker.lnk`
+   - Linux: `~/.config/systemd/user/mcp-sqlbroker.service` enabled via `systemctl --user enable --now`
+   - macOS: `~/Library/LaunchAgents/com.creamac.mcp-sqlbroker.plist` loaded via `launchctl`
+7. Launches the broker right now so it's usable immediately
+8. Wires `~/.claude.json` (and optionally `~/.codex/config.toml`)
+
+**ODBC Driver pre-flight (portable mode skips auto-install):**
 
 ```powershell
+# Windows
 Get-OdbcDriver -Name '*ODBC Driver* for SQL Server' | Select-Object -ExpandProperty Name
 ```
 
-If neither is listed, tell the user to install it first via the [Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) — this is the one piece Quick mode cannot do without admin. Then retry.
+```bash
+# Unix
+odbcinst -q -d 2>/dev/null | grep -i 'ODBC Driver 1[78] for SQL Server'
+```
+
+If nothing matches, tell the user to install ODBC Driver 17/18 first ([Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) on Windows; `brew install msodbcsql18` on macOS; Microsoft apt/yum repo on Linux). Portable mode cannot install the driver without admin/sudo.
+
+**Linux portable caveat:** the broker stops when the user logs out, since `systemctl --user` units don't persist across logout by default. To keep it running after logout, an admin must run `loginctl enable-linger <user>` once. For laptops and dev boxes this is rarely needed.
 
 ## Step 3b — Service deploy (always-on, needs admin)
 

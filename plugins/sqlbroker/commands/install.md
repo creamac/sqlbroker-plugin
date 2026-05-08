@@ -59,17 +59,23 @@ If user picks `Quick` → **Step 3a**. If `Service` → **Step 3b**.
 
 For same-path refresh, skip this question and use **Step 3b with `-RefreshOnly`** (refresh inherits the original install's mode).
 
-## Step 3a — Quick portable deploy (no UAC)
+## Step 3a — Quick portable deploy (no UAC / no sudo)
 
 Pre-flight: confirm an MS ODBC driver is already on the system.
 
 ```powershell
+# Windows
 Get-OdbcDriver -Name '*ODBC Driver* for SQL Server' | Select-Object -ExpandProperty Name
 ```
 
-If neither `ODBC Driver 17` nor `18 for SQL Server` is listed, tell the user to install it from [Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) first — Quick mode doesn't bundle the driver. Then retry.
+```bash
+# Unix
+odbcinst -q -d 2>/dev/null | grep -i 'ODBC Driver 1[78] for SQL Server'
+```
 
-Run deploy in the **current shell** (no `Start-Process -Verb RunAs`):
+If nothing matches, tell the user to install ODBC 17/18 first ([Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) on Windows; `brew install msodbcsql18` on macOS; Microsoft apt/yum repo on Linux). Portable mode doesn't bundle the driver.
+
+**Windows** — run deploy in the current shell (no `Verb RunAs`):
 
 ```powershell
 $deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
@@ -77,9 +83,18 @@ $installDir = '<value from Step 2>'
 & $deploy -InstallDir $installDir -Portable
 ```
 
-`-Portable` implies `-SkipService -SkipOdbc -AutoWire`. Add `-Codex` to also patch `~/.codex/config.toml`.
+**macOS / Linux** — no sudo:
 
-What this does: downloads embedded Python 3.13 → pip-installs `pyodbc` + `pycryptodome` → copies broker source files → generates `master.key` → writes `start-broker.bat` + drops a `.lnk` into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` so the broker auto-starts on next logon → launches broker right now (hidden) → wires `~/.claude.json`.
+```bash
+INSTALL_DIR='<value from Step 2 — e.g. ~/.local/mcp-sqlbroker>' \
+  "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh" --portable
+```
+
+`--portable` implies `--auto-wire`, defaults `INSTALL_DIR` to `~/.local/mcp-sqlbroker`, and registers per-user autostart (no system service). Add `--codex` to also patch `~/.codex/config.toml`.
+
+What this does: bootstraps Python (Win: embedded; Unix: system + venv) → pip-installs `pyodbc` + `pycryptodome` → copies broker source → registers per-user autostart (Win: Startup `.lnk` / Linux: `systemctl --user` unit / macOS: `~/Library/LaunchAgents` plist) → launches broker now → wires `~/.claude.json`.
+
+**Linux note:** broker stops on logout unless an admin runs `loginctl enable-linger <user>` once. For dev laptops this is rarely needed.
 
 ## Step 3b — Service deploy (always-on, needs admin)
 
