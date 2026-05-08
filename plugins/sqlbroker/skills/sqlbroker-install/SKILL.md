@@ -49,17 +49,55 @@ Then reconcile the user's choice from Step 1 with what `/health` reports:
 
 | User picked | /health says | Action |
 |---|---|---|
-| `Auto-detect` | broker reachable | `$installDir` ← `install_dir` from response. Skip elevated deploy. **Go to Step 6 (wire MCP only).** |
-| `Auto-detect` | broker not reachable | Fall back to per-OS default (`D:\util\mcp-sqlbroker` / `/opt/mcp-sqlbroker`). **Go to Step 3 (elevated deploy).** |
-| Specific path X | broker reachable, install_dir = X | Same path → user wants a refresh. Run `deploy -RefreshOnly` (still needs admin to bounce the service, but skips Python/ODBC). **Go to Step 3 with `-RefreshOnly` added.** |
-| Specific path X | broker reachable, install_dir = Y (≠ X) | ⚠️ **Conflict.** Tell the user: "Existing broker at Y. Installing a second one at X would conflict on port 8765. Either pick Y above, OR uninstall the existing one first (`Unregister-ScheduledTask mcp-sqlbroker -Confirm:$false; Remove-Item -Recurse Y`)." Ask them to re-run with a corrected choice. **Stop.** |
-| Specific path X | broker not reachable | Fresh install at X. **Go to Step 3 (elevated deploy).** |
+| `Auto-detect` | broker reachable | `$installDir` ← `install_dir` from response. Skip deploy. **Go to Step 4 (wire MCP only).** |
+| `Auto-detect` | broker not reachable | Fall back to per-OS default (`D:\util\mcp-sqlbroker` / `/opt/mcp-sqlbroker`). **Go to Step 2.5 (pick install mode).** |
+| Specific path X | broker reachable, install_dir = X | Same path → user wants a refresh. **Go to Step 3b with `-RefreshOnly` added.** (Refresh always inherits the original install's mode — admin needed only if it was a service install.) |
+| Specific path X | broker reachable, install_dir = Y (≠ X) | ⚠️ **Conflict.** Tell the user: "Existing broker at Y. Installing a second one at X would conflict on port 8765. Either pick Y above, OR uninstall the existing one first (`Unregister-ScheduledTask mcp-sqlbroker -Confirm:$false` for service install, or remove the Startup `.lnk` for portable install; then `Remove-Item -Recurse Y`)." Ask them to re-run with a corrected choice. **Stop.** |
+| Specific path X | broker not reachable | Fresh install at X. **Go to Step 2.5 (pick install mode).** |
 
 For older brokers (< 2.8.2) that don't return `install_dir` on `/health`, fall back to scanning common paths until one contains `run_stdio_proxy.bat` / `run_stdio_proxy.sh`:
 - Windows: `D:\util\mcp-sqlbroker`, `C:\util\mcp-sqlbroker`, `C:\opt\mcp-sqlbroker`, `C:\apps\mcp-sqlbroker`, `%USERPROFILE%\mcp-sqlbroker`
 - Unix: `/opt/mcp-sqlbroker`, `/usr/local/mcp-sqlbroker`, `~/.local/mcp-sqlbroker`
 
-## Step 3 — elevated deploy (only when Step 2 says "deploy")
+## Step 2.5 — pick install mode (only when Step 2 says "deploy fresh")
+
+If Step 2 routed to "fresh install" (no broker running), **always ask** which install mode to use. Use `AskUserQuestion` with header `Install mode?`:
+
+- `Quick (portable, no admin)` — **recommended for laptops, single-user machines, Codex CLI users tired of UAC**. Bootstraps embedded Python in `$installDir`, drops a Startup folder shortcut so the broker auto-starts on logon, runs as the current user. ~30 seconds. No UAC, no scheduled task, no ODBC auto-install (you must already have `ODBC Driver 17/18 for SQL Server` — check with `Get-OdbcDriver`).
+- `Service (always-on, needs admin)` — original heavy path. Registers Scheduled Task running as SYSTEM, auto-installs ODBC Driver 18, broker survives logout. ~5 minutes + UAC. Use this when the broker must serve multiple Windows users or boot before login.
+
+If user picks `Quick`, **go to Step 3a**. If `Service`, **go to Step 3b**.
+
+If Step 2 detected a same-path refresh, skip this question and go directly to **Step 3b with `-RefreshOnly`** (refresh always uses the same mode the install was created in — admin needed only if it was a service install).
+
+## Step 3a — Quick portable deploy (no UAC, recommended)
+
+```powershell
+$deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
+$installDir = '<value from Step 2>'
+& $deploy -InstallDir $installDir -Portable
+```
+
+Note: **no `Start-Process -Verb RunAs`** — runs in the current shell as the current user. The `-Portable` flag implies `-SkipService -SkipOdbc -AutoWire`. Add `-Codex` to also patch `~/.codex/config.toml` in the same call.
+
+What this does:
+1. Downloads embedded Python 3.13 (~10 MB) into `$installDir\python313\`
+2. Pip-installs `pyodbc` + `pycryptodome` into that embedded Python
+3. Copies `server.py`, `manage_conn.py`, `stdio_proxy.py`, `run_stdio_proxy.bat` to `$installDir`
+4. Generates `master.key` (32 random bytes)
+5. Writes `start-broker.bat` + drops a `.lnk` into the user's Startup folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\mcp-sqlbroker.lnk`) so the broker auto-starts on next logon
+6. Launches the broker right now (hidden window) so the user can use it immediately
+7. Wires `~/.claude.json` (and optionally `~/.codex/config.toml` with `-Codex`)
+
+**ODBC Driver pre-flight (Quick mode skips auto-install):** before running the deploy, check that `ODBC Driver 17 for SQL Server` or `ODBC Driver 18 for SQL Server` is already on the system:
+
+```powershell
+Get-OdbcDriver -Name '*ODBC Driver* for SQL Server' | Select-Object -ExpandProperty Name
+```
+
+If neither is listed, tell the user to install it first via the [Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) — this is the one piece Quick mode cannot do without admin. Then retry.
+
+## Step 3b — Service deploy (always-on, needs admin)
 
 Pick the right script for the OS — and pass through the `$installDir` you settled on in Step 2.
 

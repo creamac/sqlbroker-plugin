@@ -41,14 +41,47 @@ Then reconcile the user's choice from Step 1 with what `/health` reports:
 | User picked | /health says | Action |
 |---|---|---|
 | `Auto-detect` | broker reachable | `$installDir` ← `install_dir` from response. **Go to Step 4 (wire MCP only).** |
-| `Auto-detect` | broker not reachable | Fall back to `D:\util\mcp-sqlbroker`. **Go to Step 3 (elevated deploy).** |
-| Specific path X | broker reachable, install_dir = X | Same path → user wants a refresh. **Go to Step 3 with `-RefreshOnly` added.** |
-| Specific path X | broker reachable, install_dir = Y (≠ X) | ⚠️ **Conflict.** Tell the user: "Existing broker at Y. Installing a second one at X would conflict on port 8765. Either pick Y above, OR uninstall the existing one first (`Unregister-ScheduledTask mcp-sqlbroker -Confirm:$false; Remove-Item -Recurse Y`)." Ask them to re-run with a corrected choice. **Stop.** |
-| Specific path X | broker not reachable | Fresh install at X. **Go to Step 3 (elevated deploy).** |
+| `Auto-detect` | broker not reachable | Fall back to `D:\util\mcp-sqlbroker`. **Go to Step 2.5 (pick install mode).** |
+| Specific path X | broker reachable, install_dir = X | Same path → user wants a refresh. **Go to Step 3b with `-RefreshOnly` added.** |
+| Specific path X | broker reachable, install_dir = Y (≠ X) | ⚠️ **Conflict.** Tell the user: "Existing broker at Y. Installing a second one at X would conflict on port 8765. Either pick Y above, OR uninstall the existing one first (Service install: `Unregister-ScheduledTask mcp-sqlbroker -Confirm:$false`. Portable install: remove the Startup `.lnk`. Then `Remove-Item -Recurse Y`)." **Stop.** |
+| Specific path X | broker not reachable | Fresh install at X. **Go to Step 2.5 (pick install mode).** |
 
 For older brokers (< 2.8.2) that don't return `install_dir`, scan common paths until one contains `run_stdio_proxy.bat`: `D:\util\mcp-sqlbroker`, `C:\util\mcp-sqlbroker`, `C:\opt\mcp-sqlbroker`, `C:\apps\mcp-sqlbroker`, `%USERPROFILE%\mcp-sqlbroker`.
 
-## Step 3 — elevated deploy (only when Step 2 says "deploy")
+## Step 2.5 — pick install mode (only when Step 2 says "deploy fresh")
+
+Use `AskUserQuestion` with header `Install mode?`:
+
+- `Quick (portable, no admin)` — **recommended**. ~30 seconds, no UAC, no scheduled task, no ODBC auto-install. Bootstraps embedded Python at `$installDir`, drops a Startup folder shortcut so the broker auto-starts on logon, runs as the current user. Pre-req: `ODBC Driver 17/18 for SQL Server` already installed (most Windows have it).
+- `Service (always-on, needs admin)` — original heavy path. Registers Scheduled Task running as SYSTEM, auto-installs ODBC Driver 18, broker survives logout. ~5 minutes + UAC.
+
+If user picks `Quick` → **Step 3a**. If `Service` → **Step 3b**.
+
+For same-path refresh, skip this question and use **Step 3b with `-RefreshOnly`** (refresh inherits the original install's mode).
+
+## Step 3a — Quick portable deploy (no UAC)
+
+Pre-flight: confirm an MS ODBC driver is already on the system.
+
+```powershell
+Get-OdbcDriver -Name '*ODBC Driver* for SQL Server' | Select-Object -ExpandProperty Name
+```
+
+If neither `ODBC Driver 17` nor `18 for SQL Server` is listed, tell the user to install it from [Microsoft download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) first — Quick mode doesn't bundle the driver. Then retry.
+
+Run deploy in the **current shell** (no `Start-Process -Verb RunAs`):
+
+```powershell
+$deploy = Join-Path "${CLAUDE_PLUGIN_ROOT}" 'scripts\deploy.ps1'
+$installDir = '<value from Step 2>'
+& $deploy -InstallDir $installDir -Portable
+```
+
+`-Portable` implies `-SkipService -SkipOdbc -AutoWire`. Add `-Codex` to also patch `~/.codex/config.toml`.
+
+What this does: downloads embedded Python 3.13 → pip-installs `pyodbc` + `pycryptodome` → copies broker source files → generates `master.key` → writes `start-broker.bat` + drops a `.lnk` into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` so the broker auto-starts on next logon → launches broker right now (hidden) → wires `~/.claude.json`.
+
+## Step 3b — Service deploy (always-on, needs admin)
 
 Tell the user a UAC dialog will pop up. Then launch the elevated PowerShell window — pass `-InstallDir` with the value from Step 2:
 
@@ -62,11 +95,11 @@ Start-Process powershell.exe -Verb RunAs -ArgumentList @(
 )
 ```
 
-Add `-Codex` to also patch `~/.codex/config.toml`. Add `-AutoWire` to skip the `~/.claude.json` confirmation prompt. Add `-RefreshOnly` if Step 2 detected a same-path refresh (skips Python/ODBC re-install, just bounces the scheduled task).
+Add `-Codex` to also patch `~/.codex/config.toml`. Add `-AutoWire` to skip the `~/.claude.json` confirmation prompt. Add `-RefreshOnly` if Step 2 detected a same-path refresh.
 
 The script registers a Scheduled Task named `mcp-sqlbroker` (no NSSM).
 
-For Linux/macOS:
+For Linux/macOS (service mode only — portable mode for *nix is a TODO):
 
 ```bash
 sudo INSTALL_DIR='<value from Step 2>' "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.sh"

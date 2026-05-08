@@ -24,8 +24,22 @@ param(
   [switch]$AutoWire,        # auto-yes on the ~/.claude.json wiring prompt
   [switch]$SkipMcpWire,     # don't touch ~/.claude.json at all
   [switch]$RefreshOnly,     # only copy files + bounce service; skip Python/ODBC/Task setup
-  [switch]$Codex            # also wire into ~/.codex/config.toml for Codex CLI
+  [switch]$Codex,           # also wire into ~/.codex/config.toml for Codex CLI
+  [switch]$Portable         # user-mode install: no admin, no scheduled task,
+                            # no ODBC auto-install. Adds Startup shortcut so the
+                            # broker auto-starts on next user logon. Recommended
+                            # path for laptops, single-user dev machines, and
+                            # anyone allergic to UAC.
 )
+
+# -Portable implies skip-service + skip-odbc + auto-wire (the whole point is
+# zero friction). Caller can still pass -SkipMcpWire explicitly to opt out
+# of MCP wiring on top of that.
+if ($Portable) {
+  $SkipService = $true
+  $SkipOdbc    = $true
+  if (-not $PSBoundParameters.ContainsKey('AutoWire')) { $AutoWire = $true }
+}
 
 $ErrorActionPreference = 'Stop'
 
@@ -205,15 +219,66 @@ if (-not $SkipOdbc) {
 }
 
 if ($SkipService) {
-  Ok 'Installation finished (service registration skipped per -SkipService).'
-  Write-Host ''
-  Write-Host 'Manual usage:'
-  Write-Host "  $pyExe `"$InstallDir\manage_conn.py`" add"
-  Write-Host "  $pyExe `"$InstallDir\server.py`""
-  exit 0
+  if ($Portable) {
+    # Portable mode: register a per-user auto-start instead of a system service.
+    # 1) Write start-broker.bat that exports env + launches the broker hidden.
+    # 2) Drop a .lnk into the user's Startup folder so the broker comes back
+    #    on next logon. No admin / no scheduled task / no UAC.
+    # 3) Launch it right now so the user doesn't have to re-login to test.
+    $startBat = Join-Path $InstallDir 'start-broker.bat'
+    @"
+@echo off
+set MCP_SQL_HOST=$BindHost
+set MCP_SQL_PORT=$Port
+set MCP_SQL_CONFIG=$InstallDir\connections.json
+set MCP_SQL_LOG=$InstallDir\service.log
+start "" /B "$pyExe" "$InstallDir\server.py"
+"@ | Set-Content -Path $startBat -Encoding ASCII
+    Ok "start-broker.bat written"
+
+    $startupDir = [Environment]::GetFolderPath('Startup')
+    $shortcutPath = Join-Path $startupDir 'mcp-sqlbroker.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $startBat
+    $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.WindowStyle = 7  # minimized
+    $shortcut.Description = 'mcp-sqlbroker (portable, user-mode)'
+    $shortcut.Save()
+    Ok "Startup shortcut: $shortcutPath (broker auto-starts on next logon)"
+
+    # Launch broker now (detached so this script can exit cleanly)
+    Start-Process -FilePath $startBat -WindowStyle Hidden
+    Start-Sleep -Seconds 2
+
+    $ok = $false
+    for ($i = 0; $i -lt 5; $i++) {
+      try {
+        $r = Invoke-WebRequest -Uri "http://${BindHost}:${Port}/health" -TimeoutSec 3 -UseBasicParsing
+        if ($r.StatusCode -eq 200) { $ok = $true; break }
+      } catch { Start-Sleep -Seconds 1 }
+    }
+    if ($ok) {
+      Ok "Broker is running (portable user-mode)"
+    } else {
+      Warn "Broker did not respond on /health within 5s. Run start-broker.bat manually and check service.log"
+    }
+    # Fall through to MCP wire section below — Portable still wires Claude/Codex.
+  } else {
+    Ok 'Installation finished (service registration skipped per -SkipService).'
+    Write-Host ''
+    Write-Host 'Manual usage:'
+    Write-Host "  $pyExe `"$InstallDir\manage_conn.py`" add"
+    Write-Host "  $pyExe `"$InstallDir\server.py`""
+    exit 0
+  }
 }
 
 # --- 4) Windows Task Scheduler service (no NSSM needed) ---
+# Skip the entire scheduled-task block in -Portable mode. The portable branch
+# above already wired a per-user Startup shortcut + launched the broker,
+# so we go straight to the health check + MCP wire below.
+if (-not $SkipService) {
 # Migrate / clean up any previous NSSM service so we don't have two copies running
 $existingNssmService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingNssmService) {
@@ -286,6 +351,7 @@ Start-Sleep -Seconds 2
 $task = Get-ScheduledTask -TaskName $ServiceName
 $info = Get-ScheduledTaskInfo -TaskName $ServiceName
 Ok "Scheduled task '$ServiceName' state=$($task.State) lastRun=$($info.LastRunTime) lastResult=$($info.LastTaskResult)"
+}  # end of: if (-not $SkipService) — scheduled-task block skipped in portable mode
 
 # --- 5) Health check ---
 $ok = $false
