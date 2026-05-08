@@ -1,6 +1,6 @@
 ---
 name: sqlbroker-add
-description: Add a new MSSQL connection alias to mcp-sqlbroker. Collects host/user/db/policy in chat; password is collected by the user in their own terminal (never via chat). Triggers on "/sqlbroker-add", "/sqlbroker:add", "add new alias", "add database connection", "register new mssql alias".
+description: Add a new MSSQL connection alias to mcp-sqlbroker. Collects host/user/db/policy in chat. Password collected via the user's terminal by default (getpass hidden input); chat-paste flow available on explicit opt-in. Triggers on "/sqlbroker-add", "/sqlbroker:add", "add new alias", "add database connection", "register new mssql alias".
 ---
 
 # Add a new MSSQL connection alias
@@ -28,7 +28,9 @@ Add a new MSSQL connection alias to mcp-sqlbroker. The alias name comes from `$A
 
 5b. **Charset (optional, default `cp874`)** — codepage for legacy ANSI VARCHAR/CHAR columns. The default `cp874` covers Thai_CI_AS (TIS-620) which is the common case in TH environments. Only ask if the target server's default collation is non-Thai (e.g. `Latin1_General_CI_AS` → use `cp1252`, Japanese → `cp932`). NVARCHAR is unaffected by this setting (always UTF-16). If unsure, accept the default — wrong charset shows up as `?` or mojibake on Thai data and is a one-flag fix.
 
-6. **Password** — DO NOT collect via chat. Print the command for the user to run in their own terminal — `manage_conn.py` prompts for password via `getpass` (hidden input):
+6. **Password — pick the flow** (default = terminal-only; chat-paste only on explicit user opt-in):
+
+   **6a. Terminal flow (default, recommended)** — DO NOT collect via chat. Print the command for the user to run in their own terminal — `manage_conn.py` prompts for password via `getpass` (hidden input):
 
    **SQL login:**
    ```powershell
@@ -50,11 +52,29 @@ Add a new MSSQL connection alias to mcp-sqlbroker. The alias name comes from `$A
 
    Linux/Mac: replace `D:\util\mcp-sqlbroker\python313\python.exe` with `/opt/mcp-sqlbroker/.venv/bin/python3` and use `\` line-continuations.
 
-7. After the user reports it ran successfully, verify with `/sqlbroker:test <alias>` (Claude) or `/sqlbroker-test <alias>` (Codex).
+   **6b. Chat-paste flow (only when user explicitly opts in)** — trigger on "paste in chat ok", "skip terminal step", "ขอ paste มาใน chat", "ขี้เกียจเปิด terminal" or similar.
+
+   Before accepting the password, **show this one-line warning** and ask the user to confirm with `yes`:
+
+   > ⚠️ Password จะอยู่ใน conversation transcript + Claude API prompt cache (TTL 5 min) + Bash tool args ตลอดไป. Trade-off: ไม่ต้องเปิด terminal. ยืนยันด้วยการพิมพ์ `yes`?
+
+   On confirmation, ask the user to paste the password in the next message. Then run the equivalent command **non-interactively** with `--password` so no terminal step is needed:
+
+   ```powershell
+   D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py add <alias> ^
+       --host '<host>' --user '<user>' --database '<db>' --policy <policy> --auth-mode sql ^
+       --password '<paste-here>' --force
+   ```
+
+   After running, **do not echo the password back** in any subsequent message. Treat it as opaque from that point onward.
+
+7. After the user reports it ran successfully (or you ran it inline in flow 6b), verify with `/sqlbroker:test <alias>` (Claude) or `/sqlbroker-test <alias>` (Codex).
 
 ## Safety
 
-- Never accept the password as a `--password` CLI arg from the user — it would enter shell history.
-- Never echo the password back in chat.
+- Default to the terminal flow (6a). Use chat-paste flow (6b) only on explicit user opt-in — never silently route through `--password`.
+- Show the trade-off warning in 6b every time. Do not skip it on repeated invocations.
+- Never echo the password back in chat or in any tool result summary.
+- Never store the password in a file the user did not ask for. Pass it through to `manage_conn.py` and forget it.
 - Broker re-reads `connections.json` on every request — no service restart.
 - For production DBs, prefer `readonly` AND a SQL login with `db_datareader` only.
