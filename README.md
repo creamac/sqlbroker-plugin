@@ -10,9 +10,10 @@ the same plugin works for Claude Code (`/plugin marketplace add ...`) and
 Codex CLI (`codex plugin marketplace add ...`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.7.1-blue)
+![Version](https://img.shields.io/badge/version-2.9.1-blue)
 ![Tools](https://img.shields.io/badge/MCP_tools-14-green)
 ![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
+![Install](https://img.shields.io/badge/install-Portable_%7C_Service-brightgreen)
 ![Hosts](https://img.shields.io/badge/hosts-Claude_Code_%7C_Codex_CLI-purple)
 
 ```
@@ -27,15 +28,27 @@ The skill auto-activates on any DB-query intent and routes through the broker.
 
 ## Quickstart
 
-> 5 minutes from zero to your first SQL query.
+> **~1 minute** with Quick portable mode (recommended for laptops, Codex users), or 5 minutes with Service mode (always-on, multi-user).
 
 ### 0) Prerequisites per OS
 
+Pick an install mode first — the prereqs differ:
+
+**🟢 Quick portable mode** (recommended for laptops, dev machines, Codex users tired of UAC) — no admin, ~30s:
+
+| OS | Need yourself | Auto-handled by `deploy --portable` |
+|---|---|---|
+| **Windows** | Claude Code or Codex CLI 0.124+, **ODBC Driver 17 or 18 for SQL Server already installed** ([download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server)) | embedded Python 3.13 + pyodbc + pycryptodome, Startup folder `.lnk` for autostart, MCP wiring |
+| **macOS** | Claude Code or Codex CLI 0.124+, `python3` (`brew install python@3.13`), `msodbcsql18` (`brew install msodbcsql18`) | venv + pyodbc + pycryptodome, `~/Library/LaunchAgents/com.creamac.mcp-sqlbroker.plist` for autostart, MCP wiring |
+| **Linux** | Claude Code or Codex CLI 0.124+, `python3` + `python3-venv`, `msodbcsql17/18` from MS repo, `systemctl --user` available | venv + pyodbc + pycryptodome, `~/.config/systemd/user/mcp-sqlbroker.service` for autostart, MCP wiring |
+
+**🟡 Service mode** (always-on, multi-user, survives logout) — needs admin, ~5min:
+
 | OS | Need yourself | Auto-installed by `deploy` |
 |---|---|---|
-| **Windows** | Claude Code or Codex CLI 0.124+, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task |
-| **macOS** | Claude Code or Codex CLI 0.124+, `python3` (`brew install python@3.13`), `sudo` | venv + `pyodbc` + `pycryptodome`, launchd plist. ODBC: `brew install msodbcsql18` (manual) |
-| **Linux** | Claude Code or Codex CLI 0.124+, `python3` + `python3-venv`, `sudo` | venv + `pyodbc` + `pycryptodome`, systemd unit. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
+| **Windows** | Claude Code or Codex CLI 0.124+, admin shell access | embedded Python 3.13, ODBC Driver 18, Scheduled Task running as SYSTEM |
+| **macOS** | Claude Code or Codex CLI 0.124+, `python3`, `sudo` | venv + pyodbc + pycryptodome, launchd plist at `/Library/LaunchDaemons/`, MCP wiring. ODBC: `brew install msodbcsql18` (manual) |
+| **Linux** | Claude Code or Codex CLI 0.124+, `python3` + `python3-venv`, `sudo` | venv + pyodbc + pycryptodome, systemd system unit at `/etc/systemd/system/`, MCP wiring. ODBC: install `msodbcsql18` from Microsoft repo (manual) |
 
 You can install on either CLI alone, or **both** — pass `-Codex` (Windows) / `--codex` (Unix) to the deploy script and it will wire `~/.claude.json` AND `~/.codex/config.toml` in one run.
 
@@ -66,40 +79,66 @@ Both CLIs read the same broker source under `plugins/sqlbroker/`. The manifests 
 
 ### 2) Install the local service
 
-> **Required step on first install.** Don't skip this — Quickstart Step 3 below assumes the broker process is up and `manage_conn.py` is deployed under `D:\util\mcp-sqlbroker\` (Windows) / `/opt/mcp-sqlbroker/` (Unix). If you try to run `manage_conn.py` before this step, you'll get `ModuleNotFoundError: No module named 'server'`.
+> **Required step on first install.** Don't skip — Quickstart Step 3 assumes the broker is up and `manage_conn.py` is deployed at the install dir. Running `manage_conn.py` before this step gives `ModuleNotFoundError: No module named 'server'`.
 
 **Claude Code (recommended):** type
 ```
 /sqlbroker:install
 ```
-(UAC prompts on Windows / sudo prompts on Unix when the broker isn't running yet). The skill auto-checks `curl http://127.0.0.1:8765/health` first — **if the broker is already running** (e.g. you installed via the other CLI on this same host), it skips the elevated deploy and just wires the missing MCP config. **If not running**, it pops an `AskUserQuestion` for the install location (laptops with no D: drive can pick `%USERPROFILE%\mcp-sqlbroker` or `C:\opt\mcp-sqlbroker`), then elevates and runs the OS-appropriate deploy script.
 
-**Codex CLI:** Codex does **not** expose plugin skills as slash commands — `/sqlbroker-install` returns "Unrecognized command". Instead, ask the agent in plain language: `"install sqlbroker"` or `"set up sqlbroker on this machine"`. The Codex agent will pick up the `sqlbroker-install` skill and follow it. Since Codex sandboxes typically can't elevate themselves, the agent will print the manual elevation command for you to run in your own terminal, then call `codex mcp add` from inside the sandbox once the broker is up.
+The skill walks you through:
 
-| OS | What deploy installs | Default install dir |
+1. **Auto-detect** — probes `curl http://127.0.0.1:8765/health` first. If the broker is already running (e.g. you installed via the other CLI), it skips deploy and only wires the missing MCP config. No admin needed.
+2. **Pick install path** — `AskUserQuestion` with OS-appropriate options. Laptops without a D: drive can pick `%USERPROFILE%\mcp-sqlbroker`, `C:\opt\...`, or any custom path. Linux/macOS users default to `~/.local/mcp-sqlbroker` for portable mode.
+3. **Pick install mode** — `AskUserQuestion`:
+   - **Quick (portable, no admin)** ← recommended. ~30s. No UAC/sudo. Per-user autostart on login.
+   - **Service (always-on, needs admin)** — original heavy path. UAC/sudo. Always-on across logout.
+4. **Deploy** — runs the right path automatically. Quick mode in current shell; Service mode elevates.
+5. **Wire MCP** — patches `~/.claude.json` (and `~/.codex/config.toml` if you said yes).
+
+**Codex CLI:** Codex does **not** expose plugin skills as slash commands — `/sqlbroker-install` returns "Unrecognized command". Instead, ask the agent in plain language: `"install sqlbroker (quick mode)"`. Since the Codex sandbox can't elevate itself, picking Quick mode is friction-free; for Service mode the agent prints the elevation command for you to run.
+
+**Default install dirs:**
+
+| OS | Quick (portable) | Service (always-on) |
 |---|---|---|
-| Windows | embedded Python 3.13, ODBC Driver 18, Scheduled Task `mcp-sqlbroker`, Claude/Codex MCP wiring | `D:\util\mcp-sqlbroker` |
-| macOS / Linux | venv + `pyodbc` + `pycryptodome`, launchd plist / systemd unit, MCP wiring | `/opt/mcp-sqlbroker` |
+| Windows | `%USERPROFILE%\mcp-sqlbroker` (or any user-writable path) | `D:\util\mcp-sqlbroker` |
+| macOS / Linux | `~/.local/mcp-sqlbroker` | `/opt/mcp-sqlbroker` |
 
-**Custom install location:** the install dir is fully configurable. The skill will ask you on first install. To override manually, pass `-InstallDir 'C:\path\to\anywhere'` to `deploy.ps1` or `INSTALL_DIR=/path/to/anywhere sudo ./deploy.sh`. Once installed, the broker exposes the chosen path on `/health` so future skill invocations (update, status, fast-path Codex wiring) auto-detect it without hardcoding.
+**Custom install location:** fully configurable. Skill asks on first install. Manual overrides:
 
-The deploy script supports flags `-AutoWire` / `--auto-wire` to skip the y/n prompt and `-Codex` / `--codex` to also patch `~/.codex/config.toml` in the same run.
+- Windows Quick: `& deploy.ps1 -InstallDir 'C:\path\to\anywhere' -Portable`
+- Windows Service: `Start-Process -Verb RunAs powershell ... -File deploy.ps1 -InstallDir 'X' -AutoWire`
+- Unix Quick: `INSTALL_DIR=/path/to/anywhere ./deploy.sh --portable`
+- Unix Service: `INSTALL_DIR=/path/to/anywhere sudo ./deploy.sh`
 
-**If the broker is already up and you only need Codex wired**, the simplest one-liner (run in your own terminal — no admin needed):
+Once installed, the broker exposes the chosen path on `/health` so future skill invocations (update, status, fast-path Codex wiring) auto-detect it. No hardcoding.
+
+The deploy scripts support flags `-AutoWire` / `--auto-wire` (skip the `~/.claude.json` y/n prompt) and `-Codex` / `--codex` (also patch `~/.codex/config.toml`). `-Portable` / `--portable` implies both plus `-SkipService -SkipOdbc`.
+
+**Fast-path: broker already up, only need Codex wired** — run in your own terminal, no admin:
 
 ```bash
-codex mcp add sqlbroker -- D:\util\mcp-sqlbroker\run_stdio_proxy.bat   # Windows
-codex mcp add sqlbroker -- /opt/mcp-sqlbroker/run_stdio_proxy.sh       # Linux/macOS
+# Windows — replace path with what /health reports as install_dir
+codex mcp add sqlbroker -- C:\Users\you\mcp-sqlbroker\run_stdio_proxy.bat
+
+# Linux/macOS
+codex mcp add sqlbroker -- ~/.local/mcp-sqlbroker/run_stdio_proxy.sh
 ```
 
-Codex's own CLI rewrites `~/.codex/config.toml`. Verify with `codex mcp list`.
+Verify: `codex mcp list && codex mcp get sqlbroker`.
 
 ### 3) Add your first connection
 
 **Claude Code:** type `/sqlbroker:add prod_main`
 **Codex CLI:** ask the agent `"add a sqlbroker alias called prod_main"` (no slash command — Codex skills are AI-invoked from natural language)
 
-Either way, the agent collects host / user / db / policy in chat (policy via an `AskUserQuestion`-style form on Claude, or interactive prompt on Codex). Then it prints **one command for you to run in your own terminal** — `getpass` prompts for the password there. Password never enters the chat or shell history.
+The agent collects host / user / db / policy in chat (policy via `AskUserQuestion` on Claude, or interactive prompt on Codex). For the **password**, two flows:
+
+- **Default (terminal-only)** — agent prints a one-liner for you to paste into your own terminal. `manage_conn.py` prompts via `getpass` (hidden input). Password never enters the chat, transcript, or Claude API prompt cache. Recommended for any password you'd care about leaking.
+- **Opt-in chat-paste** — say "paste in chat ok" / "ขอ paste มาใน chat" and the agent shows a one-line trade-off warning, asks you to confirm with `yes`, then runs the command non-interactively with `--password '<paste>'`. Trade-off: the password lands in the conversation transcript, the Claude API prompt cache (TTL 5 min), and Bash tool args. Use only for throwaway dev/UAT credentials you'll rotate anyway.
+
+**Thai data note:** the `add` flow has an optional `--charset` field (default `cp874`, fits Thai_CI_AS / TIS-620 collations). NVARCHAR is unaffected. Override with `cp1252` (Western Europe), `cp932` (Japanese), or `utf-8` for non-Thai environments.
 
 ### 4) Use it
 
@@ -109,8 +148,8 @@ Just ask the agent things like:
 "list_databases ของ prod_main"
 "select count(*) from t_orders where created_at > '2026-01-01' on staging_main"
 "เช็ค proc ที่มี audit ใน billing_db บน prod_main"
-"ดู definition ของ usp_FsData_Approve_Workflow บน prod_main"
-"compare definition ของ usp_X ระหว่าง staging_main กับ prod_main"
+"ดู definition ของ usp_approve_order บน prod_main"
+"compare definition ของ usp_approve_order ระหว่าง staging_main กับ prod_main"
 ```
 
 The auto-router skill (`sqlbroker`) picks up the intent on either CLI and dispatches to the right one of the 14 MCP tools — no need to remember tool names.
@@ -220,11 +259,13 @@ Auth (v2.4+): **SQL login** (verified, default), **Windows Authentication** (`Tr
 
 ### Hosts running the broker
 
-| OS | Service backend | Auto-restart |
+| OS | Service mode (always-on, admin) | Quick portable mode (per-user, no admin) |
 |---|---|---|
-| **Windows 10 / 11 / Server 2016+** | Windows Task Scheduler (runs as SYSTEM at boot) | RestartCount 99, 1m interval |
-| **macOS 12+** | launchd (`com.creamac.mcp-sqlbroker.plist`) | `KeepAlive=true` |
-| **Linux (Debian/Ubuntu/RHEL/Fedora, systemd)** | systemd unit | `Restart=on-failure`, `RestartSec=5` |
+| **Windows 10 / 11 / Server 2016+** | Task Scheduler (runs as SYSTEM at boot) — `RestartCount 99` | Startup folder `.lnk` → `start-broker.bat` (auto-launch on user logon) |
+| **macOS 12+** | launchd daemon (`/Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist`, `KeepAlive=true`) | launchd agent (`~/Library/LaunchAgents/com.creamac.mcp-sqlbroker.plist`) — auto-launch on user login |
+| **Linux (systemd)** | system unit at `/etc/systemd/system/`, `Restart=on-failure` | user unit at `~/.config/systemd/user/`, `systemctl --user enable --now`. Stops on logout unless admin runs `loginctl enable-linger <user>` once |
+
+**Thai (and other non-Latin) data**: v2.8.4+ supports legacy ANSI VARCHAR/CHAR columns via per-alias `charset` (default `cp874` for `Thai_CI_AS` / TIS-620). Connection-level `Autotranslate=No` + `pyodbc.setdecoding(SQL_CHAR, charset)` + UTF-8 stdio keeps Thai bytes intact end-to-end. NVARCHAR is unaffected.
 
 ### Claude Code & Codex CLI
 
@@ -507,6 +548,7 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` (C
 | `-SkipMcpWire` | off | Don't touch `~/.claude.json` (or `~/.codex/config.toml`) at all |
 | `-RefreshOnly` | off | Just copy files + bounce Scheduled Task (skip Python/ODBC) — used by `/sqlbroker:update`. **Skips MCP wiring** — combine with re-running without `-RefreshOnly` if you want wiring updated. |
 | `-Codex` | off | Also wire `~/.codex/config.toml` `[mcp_servers.sqlbroker]`. Tries `codex mcp add sqlbroker -- <wrapper>` first; falls back to direct TOML patch via embedded Python + `tomli_w` if the Codex CLI isn't on PATH (common when running elevated and Codex was installed per-user via npm). |
+| `-Portable` | off | **User-mode install — no admin, no UAC.** Implies `-SkipService -SkipOdbc -AutoWire`. Drops a `.lnk` in `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` so the broker auto-starts on next logon. Pre-req: ODBC Driver 17/18 already installed. |
 
 `deploy.sh` (Linux/macOS) — env vars + flags:
 
@@ -523,6 +565,7 @@ Don't forget to remove the `mcpServers.sqlbroker` entry from `~/.claude.json` (C
 | `--skip-mcp-wire` | Don't touch `~/.claude.json` (or `~/.codex/config.toml`) |
 | `--refresh-only` | Bounce systemd unit / launchd plist after copying files (skip venv/deps). **Skips MCP wiring**. |
 | `--codex` | Also wire `~/.codex/config.toml` — same fallback chain as Windows (`codex mcp add` first, direct TOML patch second). |
+| `--portable` | **User-mode install — no sudo.** Implies `--auto-wire`. Defaults `INSTALL_DIR` to `~/.local/mcp-sqlbroker`. Linux: registers `systemctl --user` unit. macOS: registers `~/Library/LaunchAgents/` plist. Pre-req: ODBC Driver 17/18 already installed. |
 
 ---
 
@@ -557,9 +600,9 @@ sqlbroker-plugin/
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # Claude plugin manifest (v2.7.1)
+    │   └── plugin.json           # Claude plugin manifest (v2.9.1)
     ├── .codex-plugin/
-    │   └── plugin.json           # Codex plugin manifest (v2.7.1, with interface{})
+    │   └── plugin.json           # Codex plugin manifest (v2.9.1, with interface{})
     ├── README.md                 # plugin user guide
     ├── skills/                   # Codex skill folder (auto-loaded by Codex)
     │   ├── sqlbroker/SKILL.md            # auto-activating router skill (tool-pick cheatsheet)
@@ -605,10 +648,18 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | v2.6.0 | ✅ shipped | +4 tools: `get_server_info`, `find_in_definitions`, `preview_table`, `get_active_queries` |
 | v2.7.0 | ✅ shipped | +3 tools: `compare_definitions`, `find_in_columns`, `get_proc_params` + `/sqlbroker:diff` slash command |
 | v2.7.1 | ✅ shipped | **Pre-mortem hotfix**: pool resets session state on checkout, friendly DMV permission errors, `deploy.sh --auto-wire`, `-RefreshOnly` preflight check, tool descriptions trimmed ~50% (verbose guidance moved to skill) |
-| **v2.8.0** | ✅ shipped | **Codex CLI support**: dual-marketplace (`.codex-plugin/`), 9 first-class Codex skills + auto-router, deploy `-Codex`/`--codex` flag (codex CLI primary, TOML patch fallback via `tomli_w`), commands restructured as 1-line shims pointing at single-source skill files |
-| v2.9 | idea | Azure AD interactive auth (device code flow) |
-| v3.0 | idea | Per-alias query timeout + concurrency limit |
-| v3.1 | idea | Optional auth token between AI client and the broker (for multi-user / shared hosts) |
+| v2.8.0 | ✅ shipped | **Codex CLI support**: dual-marketplace (`.codex-plugin/`), 9 first-class Codex skills + auto-router, deploy `-Codex`/`--codex` flag (codex CLI primary, TOML patch fallback via `tomli_w`) |
+| v2.8.1 | ✅ shipped | Codex 0.125 hotfixes: `stdio_proxy` readiness signal on stderr + explicit `readline()` loop (Windows stdin buffering bug), `defaultPrompt` trimmed to 3 entries, slash-command myth corrected (Codex skills are AI-invoked, not slash) |
+| v2.8.2 | ✅ shipped | `manage_conn.py` sys.path fix (embedded Python `_pth` blocks script-dir auto-add), `/health` returns `install_dir` + `version` so future skill calls auto-detect deployed location |
+| v2.8.3 | ✅ shipped | Install skill: `AskUserQuestion` for install path **fires first**, then `/health` reconciles — surfaces port-conflict if user picks a fresh path while broker already at another |
+| v2.8.4 | ✅ shipped | **Thai (and other non-Latin) data**: `Autotranslate=No` + per-alias `charset` field (default `cp874`) + `setdecoding(SQL_CHAR)` + `sys.stdout.reconfigure(utf-8)` in `stdio_proxy` |
+| v2.8.5 | ✅ shipped | Opt-in chat-paste password flow on `/sqlbroker:add` (default still terminal-only `getpass`) |
+| **v2.9.0** | ✅ shipped | **Windows portable mode**: `deploy.ps1 -Portable` — no UAC, no scheduled task, no ODBC auto-install. Embedded Python in user dir + Startup folder `.lnk` for autostart. ~30s install vs ~5min. Recommended for laptops + Codex users. |
+| **v2.9.1** | ✅ shipped | **Linux/macOS portable parity**: `deploy.sh --portable` — no sudo, defaults to `~/.local/mcp-sqlbroker`. Linux: `systemctl --user` unit. macOS: `~/Library/LaunchAgents/` plist. |
+| v3.0 | idea | Pre-built portable archive as GitHub Release artifact (skips embedded Python download) |
+| v3.1 | idea | Azure AD interactive auth (device code flow) |
+| v3.2 | idea | Per-alias query timeout + concurrency limit |
+| v3.3 | idea | Optional auth token between AI client and the broker (for multi-user / shared hosts) |
 
 Open issues / PRs welcome at https://github.com/creamac/sqlbroker-plugin/issues
 
