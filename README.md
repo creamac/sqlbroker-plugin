@@ -10,7 +10,7 @@ the same plugin works for Claude Code (`/plugin marketplace add ...`) and
 Codex CLI (`codex plugin marketplace add ...`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.9.1-blue)
+![Version](https://img.shields.io/badge/version-2.9.2-blue)
 ![Tools](https://img.shields.io/badge/MCP_tools-14-green)
 ![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
 ![Install](https://img.shields.io/badge/install-Portable_%7C_Service-brightgreen)
@@ -265,7 +265,7 @@ Auth (v2.4+): **SQL login** (verified, default), **Windows Authentication** (`Tr
 | **macOS 12+** | launchd daemon (`/Library/LaunchDaemons/com.creamac.mcp-sqlbroker.plist`, `KeepAlive=true`) | launchd agent (`~/Library/LaunchAgents/com.creamac.mcp-sqlbroker.plist`) — auto-launch on user login |
 | **Linux (systemd)** | system unit at `/etc/systemd/system/`, `Restart=on-failure` | user unit at `~/.config/systemd/user/`, `systemctl --user enable --now`. Stops on logout unless admin runs `loginctl enable-linger <user>` once |
 
-**Thai (and other non-Latin) data**: v2.8.4+ supports legacy ANSI VARCHAR/CHAR columns via per-alias `charset` (default `cp874` for `Thai_CI_AS` / TIS-620). Connection-level `Autotranslate=No` + `pyodbc.setdecoding(SQL_CHAR, charset)` + UTF-8 stdio keeps Thai bytes intact end-to-end. NVARCHAR is unaffected.
+**Thai (and other non-Latin) data**: v2.8.4+ handles legacy ANSI VARCHAR/CHAR **reads** via per-alias `charset` (default `cp874` for `Thai_CI_AS` / TIS-620) + `Autotranslate=No` + `pyodbc.setdecoding(SQL_CHAR, charset)`. v2.9.2 fixes **writes**: the query string itself now travels via ODBC W-functions (`setencoding(utf-16le)`), so non-ASCII literals like `INSERT … VALUES ('ภาษาไทย')` reach SQL Server as Unicode codepoints and narrow to VARCHAR via the destination column's collation — no more `????` from session-codepage mis-decoding. NVARCHAR was always unaffected.
 
 ### Claude Code & Codex CLI
 
@@ -600,9 +600,9 @@ sqlbroker-plugin/
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # Claude plugin manifest (v2.9.1)
+    │   └── plugin.json           # Claude plugin manifest (v2.9.2)
     ├── .codex-plugin/
-    │   └── plugin.json           # Codex plugin manifest (v2.9.1, with interface{})
+    │   └── plugin.json           # Codex plugin manifest (v2.9.2, with interface{})
     ├── README.md                 # plugin user guide
     ├── skills/                   # Codex skill folder (auto-loaded by Codex)
     │   ├── sqlbroker/SKILL.md            # auto-activating router skill (tool-pick cheatsheet)
@@ -656,6 +656,7 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | v2.8.5 | ✅ shipped | Opt-in chat-paste password flow on `/sqlbroker:add` (default still terminal-only `getpass`) |
 | **v2.9.0** | ✅ shipped | **Windows portable mode**: `deploy.ps1 -Portable` — no UAC, no scheduled task, no ODBC auto-install. Embedded Python in user dir + Startup folder `.lnk` for autostart. ~30s install vs ~5min. Recommended for laptops + Codex users. |
 | **v2.9.1** | ✅ shipped | **Linux/macOS portable parity**: `deploy.sh --portable` — no sudo, defaults to `~/.local/mcp-sqlbroker`. Linux: `systemctl --user` unit. macOS: `~/Library/LaunchAgents/` plist. |
+| **v2.9.2** | ✅ shipped | **Thai literal write fix**: `setencoding(utf-16le)` routes queries through ODBC W-functions. `INSERT/UPDATE … VALUES ('ภาษาไทย')` (no `N` prefix) now lands correctly — previously got mis-decoded as cp874 because UTF-8 bytes were sent through A-functions. Symmetric with the v2.8.4 read-path fix. |
 | v3.0 | idea | Pre-built portable archive as GitHub Release artifact (skips embedded Python download) |
 | v3.1 | idea | Azure AD interactive auth (device code flow) |
 | v3.2 | idea | Per-alias query timeout + concurrency limit |

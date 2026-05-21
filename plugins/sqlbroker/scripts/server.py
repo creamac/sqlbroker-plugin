@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.9.1"
+SERVER_VERSION = "2.9.2"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -323,7 +323,15 @@ def get_connection(alias: str, database):
     charset = c.get("charset", "cp874")
     conn.setdecoding(pyodbc.SQL_CHAR, encoding=charset)
     conn.setdecoding(pyodbc.SQL_WCHAR, encoding="utf-16le")
-    conn.setencoding(encoding="utf-8")
+    # Send queries via the ODBC W-functions (SQLExecDirectW / SQLPrepareW).
+    # If we used utf-8 here pyodbc would fall through to the A-functions and
+    # MSSQL would interpret query bytes via the session codepage — meaning
+    # any non-ASCII literal like `INSERT ... VALUES ('ภาษาไทย')` arrives as
+    # UTF-8 bytes but gets parsed as cp874 → garbled VARCHAR. Sending as
+    # UTF-16 keeps Unicode codepoints intact through the parser; SQL Server
+    # then narrows N-less literals to VARCHAR via the destination column's
+    # collation (Thai_CI_AS = cp874), which round-trips Thai correctly.
+    conn.setencoding(encoding="utf-16le")
     return conn, c.get("policy", "readonly")
 
 
