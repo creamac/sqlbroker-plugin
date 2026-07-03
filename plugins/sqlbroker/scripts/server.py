@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.9.2"
+SERVER_VERSION = "2.10.0"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -997,31 +997,38 @@ def tool_execute_sql(args):
     database = args.get("database")
     query = args["query"]
     max_rows = int(args.get("max_rows", MAX_ROWS_DEFAULT))
+    timeout = int(args.get("timeout", 0) or 0)
     with pooled_connection(alias, database) as (conn, policy):
         err = check_policy(policy, query)
         if err:
             raise PermissionError(err)
-        cur = conn.cursor()
-        cur.execute(query)
-        result_sets = []
-        truncated = False
-        while True:
-            if cur.description:
-                cols = [d[0] for d in cur.description]
-                rows = []
-                for i, r in enumerate(cur.fetchall()):
-                    if i >= max_rows:
-                        truncated = True
-                        break
-                    rows.append({cols[j]: _coerce(r[j]) for j in range(len(cols))})
-                result_sets.append(
-                    {"columns": cols, "rows": rows, "row_count": len(rows)}
-                )
-            else:
-                result_sets.append({"rows_affected": cur.rowcount})
-            if not cur.nextset():
-                break
-        return {"result_sets": result_sets, "truncated": truncated, "policy": policy}
+        if timeout > 0:
+            conn.timeout = timeout  # pyodbc query timeout (seconds)
+        try:
+            cur = conn.cursor()
+            cur.execute(query)
+            result_sets = []
+            truncated = False
+            while True:
+                if cur.description:
+                    cols = [d[0] for d in cur.description]
+                    rows = []
+                    for i, r in enumerate(cur.fetchall()):
+                        if i >= max_rows:
+                            truncated = True
+                            break
+                        rows.append({cols[j]: _coerce(r[j]) for j in range(len(cols))})
+                    result_sets.append(
+                        {"columns": cols, "rows": rows, "row_count": len(rows)}
+                    )
+                else:
+                    result_sets.append({"rows_affected": cur.rowcount})
+                if not cur.nextset():
+                    break
+            return {"result_sets": result_sets, "truncated": truncated, "policy": policy}
+        finally:
+            if timeout > 0:
+                conn.timeout = 0  # reset before the pool reuses this connection
 
 
 TOOLS = {
@@ -1067,6 +1074,14 @@ TOOLS = {
                         "type": "integer",
                         "default": MAX_ROWS_DEFAULT,
                         "description": "Cap rows per result set.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Query timeout in seconds (0 = no limit). "
+                                       "On expiry SQL Server cancels the query cleanly. "
+                                       "Set this for exploratory/heavy queries so they don't "
+                                       "keep running after the MCP client gives up.",
                     },
                 },
                 "required": ["alias", "query"],
@@ -1286,11 +1301,39 @@ def handle_tools_list(_params):
     return {"tools": [t["spec"] for t in TOOLS.values()]}
 
 
+def _error_hint(msg: str):
+    """Map common SQL errors to a next-step hint for the calling model."""
+    if "Invalid column name" in msg:
+        return ("Column name(s) look guessed — run get_table_schema on the table "
+                "first, then retry with real column names.")
+    if "Invalid object name" in msg:
+        return ("Object not found — check the name/database with list_objects "
+                "(it may live in another database or schema).")
+    if "is not a recognized built-in function name" in msg:
+        return ("Function not available on this SQL Server version — run "
+                "get_server_info first (e.g. STRING_AGG needs 2017+, "
+                "STRING_SPLIT needs compat level 130+).")
+    if "HYT00" in msg or "timeout expired" in msg.lower():
+        return ("Query exceeded the timeout — narrow the date range, aggregate "
+                "server-side, or raise the 'timeout' argument.")
+    return None
+
+
 def handle_tools_call(params):
     name = params.get("name")
     args = params.get("arguments", {}) or {}
     if name not in TOOLS:
         raise ValueError(f"Unknown tool: {name}")
+    required = TOOLS[name]["spec"]["inputSchema"].get("required", [])
+    missing = [k for k in required if args.get(k) in (None, "")]
+    if missing:
+        log.warning("tool %s called with missing args: %s", name, missing)
+        return {
+            "content": [{"type": "text", "text":
+                f"Error: missing required argument(s): {', '.join(missing)}. "
+                f"Required for {name}: {', '.join(required)}."}],
+            "isError": True,
+        }
     try:
         result = TOOLS[name]["fn"](args)
         return {
@@ -1301,8 +1344,12 @@ def handle_tools_call(params):
         }
     except Exception as e:
         log.exception("tool error: %s", name)
+        text = f"Error: {type(e).__name__}: {e}"
+        hint = _error_hint(str(e))
+        if hint:
+            text += f"\nHint: {hint}"
         return {
-            "content": [{"type": "text", "text": f"Error: {type(e).__name__}: {e}"}],
+            "content": [{"type": "text", "text": text}],
             "isError": True,
         }
 

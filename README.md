@@ -353,7 +353,7 @@ Once the broker MCP server is wired (`mcp_servers.sqlbroker` in `~/.codex/config
 **Core:**
 - `list_aliases()` — configured aliases, no credentials
 - `list_databases(alias)` — DBs visible to the alias's login
-- `execute_sql(alias, query, database?, max_rows?)` — run T-SQL, subject to policy
+- `execute_sql(alias, query, database?, max_rows?, timeout?)` (timeout: seconds, v2.10) — run T-SQL, subject to policy
 
 **Server / runtime (v2.6):**
 - `get_server_info(alias, database?)` — version (`2008/.../2022`), edition, instance, host, collation, uptime
@@ -373,6 +373,8 @@ Once the broker MCP server is wired (`mcp_servers.sqlbroker` in `~/.codex/config
 - `preview_table(alias, table_name, top_n?, database?)` — safe `SELECT TOP n *`
 
 All tools auto-prefix `mcp__plugin_sqlbroker_sqlbroker__` when called by Claude Code (and an equivalent prefix on Codex). The auto-router skill picks the most specific tool — only fall back to `execute_sql` for custom joins across catalog views, multi-result-set procs, etc.
+
+**Error UX (v2.10):** tool calls missing a required argument get a clean one-line error (no traceback); common SQL errors (`Invalid column name`, `Invalid object name`, missing built-in function, query timeout) come back with a `Hint:` line telling the calling model the right next tool (`get_table_schema` / `list_objects` / `get_server_info`).
 
 ## Policies
 
