@@ -10,7 +10,7 @@ the same plugin works for Claude Code (`/plugin marketplace add ...`) and
 Codex CLI (`codex plugin marketplace add ...`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.9.2-blue)
+![Version](https://img.shields.io/badge/version-2.10.1-blue)
 ![Tools](https://img.shields.io/badge/MCP_tools-14-green)
 ![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
 ![Install](https://img.shields.io/badge/install-Portable_%7C_Service-brightgreen)
@@ -602,9 +602,9 @@ sqlbroker-plugin/
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # Claude plugin manifest (v2.9.2)
+    │   └── plugin.json           # Claude plugin manifest (v2.10.1)
     ├── .codex-plugin/
-    │   └── plugin.json           # Codex plugin manifest (v2.9.2, with interface{})
+    │   └── plugin.json           # Codex plugin manifest (v2.10.1, with interface{})
     ├── README.md                 # plugin user guide
     ├── skills/                   # Codex skill folder (auto-loaded by Codex)
     │   ├── sqlbroker/SKILL.md            # auto-activating router skill (tool-pick cheatsheet)
@@ -659,6 +659,8 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | **v2.9.0** | ✅ shipped | **Windows portable mode**: `deploy.ps1 -Portable` — no UAC, no scheduled task, no ODBC auto-install. Embedded Python in user dir + Startup folder `.lnk` for autostart. ~30s install vs ~5min. Recommended for laptops + Codex users. |
 | **v2.9.1** | ✅ shipped | **Linux/macOS portable parity**: `deploy.sh --portable` — no sudo, defaults to `~/.local/mcp-sqlbroker`. Linux: `systemctl --user` unit. macOS: `~/Library/LaunchAgents/` plist. |
 | **v2.9.2** | ✅ shipped | **Thai literal write fix**: `setencoding(utf-16le)` routes queries through ODBC W-functions. `INSERT/UPDATE … VALUES ('ภาษาไทย')` (no `N` prefix) now lands correctly — previously got mis-decoded as cp874 because UTF-8 bytes were sent through A-functions. Symmetric with the v2.8.4 read-path fix. |
+| **v2.10.0** | ✅ shipped | **Error UX**: missing required arguments are rejected before dispatch, SQL errors carry a next-step hint (unknown column/object, missing built-in, timeout), and `execute_sql` takes a per-call `timeout` that is reset before the pooled connection is reused. |
+| **v2.10.1** | ✅ shipped | **`execute_sql` streams rows**: `fetchmany(max_rows)` plus a one-row probe for `truncated`, replacing `fetchall()`-then-break. A query returning 100k rows under the default 1000-row cap now pulls 1001 rows instead of 100,000 — the cap no longer costs the full result set in broker memory. `truncated` semantics unchanged. |
 | v3.0 | idea | Pre-built portable archive as GitHub Release artifact (skips embedded Python download) |
 | v3.1 | idea | Azure AD interactive auth (device code flow) |
 | v3.2 | idea | Per-alias query timeout + concurrency limit |
