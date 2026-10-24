@@ -63,14 +63,14 @@ Claude Code  ──stdio JSON-RPC──▶  run_stdio_proxy.{bat,sh}  →  stdio
                                                   ├─ master.key        (32 random bytes, generated at install)
                                                   ├─ Fernet AES-128-CBC + HMAC-SHA256 (pycryptodome)
                                                   ├─ policy regex (string-literal aware)
-                                                  ├─ connection pool — per (alias,db), max 4, TTL 300s
+                                                  ├─ connection pool — ODBC driver manager (sp_reset_connection on reuse)
                                                   └─ pyodbc → MSSQL (auth: SQL | Windows | AAD-SPN)
 ```
 
 Key invariants:
 
 - **`master.key` + `connections.json` together = the secret.** Threat model is "host is the trust boundary" — anyone who can read both files (or run code as the broker user) can decrypt every password. No network token, broker binds 127.0.0.1 only.
-- **`connections.json` is re-read every request** — no service restart needed after `manage_conn.py` edits. (The pool's connections are pinged + state-reset on checkout, so removed/rotated aliases get refreshed.)
+- **`connections.json` is re-read every request** — no service restart needed after `manage_conn.py` edits. (Every call opens its connection from the current config through the ODBC driver pool, so removed/rotated aliases take effect on the next call. Do not reintroduce a Python-level connection cache: it skips `sp_reset_connection` and leaks `#temp`/transactions/`SET` options between callers — fixed in v2.10.2.)
 - **`stdio_proxy.py` is pure stdlib.** It must work without the broker's venv (Claude Code launches it directly). Don't add `pyodbc`/`pycryptodome` imports there.
 - **Three auth modes** (`auth_mode` field per alias): `sql` (default, encrypted password), `windows` (Trusted_Connection — uses broker process identity), `aad-spn` (Azure AD service principal — requires ODBC 18+).
 - **Three policies**: `readonly` (SELECT + sys only), `exec-only` (SELECT + EXEC), `full` (anything). Regex strips string literals + comments before matching so `SELECT '/* UPDATE */'` isn't false-blocked.

@@ -10,7 +10,7 @@ the same plugin works for Claude Code (`/plugin marketplace add ...`) and
 Codex CLI (`codex plugin marketplace add ...`).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-2.10.1-blue)
+![Version](https://img.shields.io/badge/version-2.10.2-blue)
 ![Tools](https://img.shields.io/badge/MCP_tools-14-green)
 ![Auth](https://img.shields.io/badge/auth-SQL_%7C_Windows_%7C_AAD--SPN-orange)
 ![Install](https://img.shields.io/badge/install-Portable_%7C_Service-brightgreen)
@@ -233,7 +233,7 @@ What you save:
 - 🚀 **One process** (broker is shared by all aliases) instead of N
 - 🔁 **No Claude Code restart** when adding a DB (broker re-reads `connections.json` per request)
 - 🛡️ **One password rotation flow** (`/sqlbroker:rotate <alias>`) for any DB
-- 🧠 **Shared connection pool** — repeat queries on the same alias reuse warm connections (~50ms saved per call after warm-up)
+- 🧠 **Connection pooling with session reset** — the ODBC driver pool reuses warm connections and runs `sp_reset_connection` between calls, so `#temp` tables, open transactions and `SET` options never leak to the next caller
 
 Add a 6th, 60th, or 600th DB and the token cost stays the same.
 
@@ -293,7 +293,7 @@ mcp-sqlbroker service (127.0.0.1:8765)
     ├─ connections.json  — host/user/db/policy/auth_mode + password_enc (Fernet AES blob)
     ├─ master.key        — 32 random bytes generated at install
     ├─ policy enforcement — regex strips strings + comments before checking
-    ├─ connection pool   — per (alias, db) Queue, max 4, TTL 300s, ping + reset state on checkout
+    ├─ connection pool   — ODBC driver manager pooling, sp_reset_connection between calls
     └─ pyodbc → MSSQL (auth: SQL login | Windows | AAD-SPN)
 ```
 
@@ -602,9 +602,9 @@ sqlbroker-plugin/
 ├── LICENSE
 └── plugins/sqlbroker/
     ├── .claude-plugin/
-    │   └── plugin.json           # Claude plugin manifest (v2.10.1)
+    │   └── plugin.json           # Claude plugin manifest (v2.10.2)
     ├── .codex-plugin/
-    │   └── plugin.json           # Codex plugin manifest (v2.10.1, with interface{})
+    │   └── plugin.json           # Codex plugin manifest (v2.10.2, with interface{})
     ├── README.md                 # plugin user guide
     ├── skills/                   # Codex skill folder (auto-loaded by Codex)
     │   ├── sqlbroker/SKILL.md            # auto-activating router skill (tool-pick cheatsheet)
@@ -661,6 +661,7 @@ Built by **Cream — Pumipat** ([@creamac](https://github.com/creamac))
 | **v2.9.2** | ✅ shipped | **Thai literal write fix**: `setencoding(utf-16le)` routes queries through ODBC W-functions. `INSERT/UPDATE … VALUES ('ภาษาไทย')` (no `N` prefix) now lands correctly — previously got mis-decoded as cp874 because UTF-8 bytes were sent through A-functions. Symmetric with the v2.8.4 read-path fix. |
 | **v2.10.0** | ✅ shipped | **Error UX**: missing required arguments are rejected before dispatch, SQL errors carry a next-step hint (unknown column/object, missing built-in, timeout), and `execute_sql` takes a per-call `timeout` that is reset before the pooled connection is reused. |
 | **v2.10.1** | ✅ shipped | **`execute_sql` streams rows**: `fetchmany(max_rows)` plus a one-row probe for `truncated`, replacing `fetchall()`-then-break. A query returning 100k rows under the default 1000-row cap now pulls 1001 rows instead of 100,000 — the cap no longer costs the full result set in broker memory. `truncated` semantics unchanged. |
+| **v2.10.2** | ✅ shipped | **No session state leaks between calls**: the Python-level connection queue reused sessions without a reset, so a `#temp` table, an open transaction or a `SET` option from one call reached the next caller (any AI session sharing the broker). A proc recompiled while a same-named `#temp` was still alive bound to it and failed with `Invalid column name`. Pooling now goes through the ODBC driver manager, which sends `sp_reset_connection` on reuse. Cost on Windows: ~0.9 ms → ~2.5 ms per call. On Linux/macOS, unixODBC pooling is off unless `Pooling=Yes` is set in `odbcinst.ini`, so each call opens a new login. |
 | v3.0 | idea | Pre-built portable archive as GitHub Release artifact (skips embedded Python download) |
 | v3.1 | idea | Azure AD interactive auth (device code flow) |
 | v3.2 | idea | Per-alias query timeout + concurrency limit |

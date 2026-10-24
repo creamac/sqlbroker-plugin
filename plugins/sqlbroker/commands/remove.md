@@ -19,4 +19,4 @@ D:\util\mcp-sqlbroker\python313\python.exe D:\util\mcp-sqlbroker\manage_conn.py 
 /opt/mcp-sqlbroker/.venv/bin/python3 /opt/mcp-sqlbroker/manage_conn.py remove $ARGUMENTS
 ```
 
-The broker re-reads `connections.json` on the next request — no service restart needed. Pooled connections for the removed alias get dropped at next checkout (ping fails → conn closed → not re-pooled).
+The broker re-reads `connections.json` on the next request — no service restart needed. Each call builds its connection from the current config, so the removed alias stops working on the next call.

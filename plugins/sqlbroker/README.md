@@ -86,7 +86,7 @@ Claude Code ──stdio JSON-RPC──▶ run_stdio_proxy.[bat|sh] → stdio_pro
                               mcp-sqlbroker service (127.0.0.1:8765)
                                 ├─ connections.json (host/user/db/policy/auth_mode + password_enc)
                                 ├─ master.key (32 random bytes, Fernet AES)
-                                ├─ connection pool (per alias+db, max 4, TTL 300s, ping + state reset)
+                                ├─ connection pool (ODBC driver pooling, sp_reset_connection between calls)
                                 ├─ policy enforcement (string-literal-aware regex)
                                 └─ pyodbc → MSSQL
 ```

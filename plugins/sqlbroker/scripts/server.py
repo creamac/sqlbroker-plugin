@@ -34,7 +34,7 @@ HOST = os.environ.get("MCP_SQL_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MCP_SQL_PORT", "8765"))
 LOG_PATH = os.environ.get("MCP_SQL_LOG", os.path.join(HERE, "service.log"))
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_VERSION = "2.10.1"
+SERVER_VERSION = "2.10.2"
 MAX_ROWS_DEFAULT = 1000
 
 logging.basicConfig(
@@ -335,100 +335,33 @@ def get_connection(alias: str, database):
     return conn, c.get("policy", "readonly")
 
 
-# ---------- Connection pool (v2.5) ----------
-# Reuses pyodbc.Connection objects per (alias, database) tuple. pyodbc has
-# its own ODBC handle pooling on top, but a Python-level pool also avoids
-# rebuilding the connection-string + ODBC manager round-trip per request.
-import threading
-import time
+# ---------- Connection pool (v2.10.2) ----------
+# Pooling is left to the ODBC driver manager (pyodbc.pooling, on by default).
+# Closing a pyodbc connection hands it back to that pool, and the driver sends
+# sp_reset_connection before the next request on it, so #temp tables, open
+# transactions and SET options from one call never reach the next caller.
+# v2.5-v2.10.1 kept pyodbc.Connection objects in a Python queue instead: reuse
+# skipped the reset, and a #temp left by one batch (from any session sharing the
+# broker) bound into a later proc recompile -> "Invalid column name".
 from contextlib import contextmanager
-from queue import Empty, Queue
-
-POOL_MAX_PER_KEY = int(os.environ.get("MCP_SQL_POOL_MAX", "4"))
-POOL_IDLE_TTL    = int(os.environ.get("MCP_SQL_POOL_TTL", "300"))  # seconds
-_pool: dict = {}
-_pool_lock = threading.Lock()
-
-
-def _pool_key(alias, database):
-    return (alias, database or "")
-
-
-def _checkout(alias, database):
-    """Get a healthy pooled connection or build a new one."""
-    key = _pool_key(alias, database)
-    with _pool_lock:
-        q = _pool.setdefault(key, Queue())
-    while True:
-        try:
-            conn, last_used, policy = q.get_nowait()
-        except Empty:
-            return get_connection(alias, database)
-        # Drop stale or dead connections
-        if time.time() - last_used > POOL_IDLE_TTL:
-            try: conn.close()
-            except Exception: pass
-            continue
-        try:
-            # Ping + reset session-level state so a previous user's
-            # SET LOCK_TIMEOUT / SET TRANSACTION ISOLATION LEVEL doesn't leak
-            # into the next request. Reuses the existing connection.
-            cur = conn.cursor()
-            cur.execute("SET LOCK_TIMEOUT 30000; SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT 1")
-            cur.fetchall()
-            cur.close()
-            return conn, policy
-        except Exception:
-            try: conn.close()
-            except Exception: pass
-            continue
-
-
-def _checkin(alias, database, conn, policy):
-    """Return a connection to the pool, or close it if pool is full."""
-    key = _pool_key(alias, database)
-    q = _pool.get(key)
-    if q is None or q.qsize() >= POOL_MAX_PER_KEY:
-        try: conn.close()
-        except Exception: pass
-        return
-    q.put((conn, time.time(), policy))
 
 
 def invalidate_pool(alias=None):
-    """Close + drop pool entries for an alias (or all if alias=None).
-    Call after removing/rotating an alias (in-process only — manage_conn.py
-    runs out-of-process; that's why we close stale connections at checkout
-    time too)."""
-    with _pool_lock:
-        keys = list(_pool.keys()) if alias is None else [k for k in _pool if k[0] == alias]
-        for k in keys:
-            q = _pool.pop(k, None)
-            if q is None:
-                continue
-            while True:
-                try:
-                    conn, _, _ = q.get_nowait()
-                    try: conn.close()
-                    except Exception: pass
-                except Empty:
-                    break
+    """No-op since v2.10.2 (no Python-level pool left to drop)."""
 
 
 @contextmanager
 def pooled_connection(alias, database):
-    """Context manager: yields (conn, policy); returns conn to pool on success."""
-    conn, policy = _checkout(alias, database)
-    success = False
+    """Context manager: yields (conn, policy) on a freshly reset session."""
+    conn, policy = get_connection(alias, database)
     try:
+        cur = conn.cursor()
+        cur.execute("SET LOCK_TIMEOUT 30000")
+        cur.close()
         yield conn, policy
-        success = True
     finally:
-        if success:
-            _checkin(alias, database, conn, policy)
-        else:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 
 def _coerce(v):
@@ -1029,7 +962,7 @@ def tool_execute_sql(args):
             return {"result_sets": result_sets, "truncated": truncated, "policy": policy}
         finally:
             if timeout > 0:
-                conn.timeout = 0  # reset before the pool reuses this connection
+                conn.timeout = 0  # harmless: the connection is closed right after
 
 
 TOOLS = {
